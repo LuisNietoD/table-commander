@@ -94,7 +94,14 @@ function parseDecklist(text) {
   return out;
 }
 
-const dn = (c) => (c && (c.fn || c.name)) || "";
+/* nom affiché : tient compte de la face visible pour les cartes recto-verso */
+const dn = (c) => (c && (c.flipped ? (c.bfn || c.bname || c.fn || c.name) : (c.fn || c.name))) || "";
+/* images de la face actuellement visible (petite et grande) */
+const fimg = (c) => (c && c.flipped && c.bimg) ? c.bimg : (c && c.img) || null;
+const fimgN = (c) => (c && c.flipped && (c.bimgN || c.bimg)) ? (c.bimgN || c.bimg) : (c && (c.imgN || c.img)) || null;
+/* normalise pour comparer sans tenir compte de la casse ni des accents
+   (utile pour filtrer/chercher indifféremment en français ou en anglais) */
+const norm = (s) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
 
 /* ================= internationalisation =================
    UI_LANG est la langue de l'interface ("fr" ou "en").
@@ -197,6 +204,8 @@ const TR = {
   "sur le champ de bataille": "onto the battlefield",
   "une carte face cachée": "a face-down card",
   "Piocher": "Draw",
+  "Déployer les équipements": "Deploy attachments",
+  "Ranger les équipements": "Tidy attachments",
   "Dégager tout": "Untap all",
   "Mélanger": "Shuffle",
   "Regarder X": "Look at X",
@@ -270,6 +279,10 @@ const TR = {
   "➖ Retirer un marqueur": "➖ Remove a counter",
   "🏷 Marqueur nommé…": "🏷 Named counter…",
   "👁 Face visible": "👁 Face up",
+  "⟳ Transformer": "⟳ Transform",
+  "Deck importé avant la prise en charge du recto-verso ? Recliquez sur « Importer les cartes » pour récupérer les faces arrière.": "Deck imported before double-faced support? Click “Import cards” again to fetch the back faces.",
+  "Transformer (recto-verso)": "Transform (double-faced)",
+  "transforme": "transforms",
   "🙈 Face cachée": "🙈 Face down",
   "🪙 Copie-jeton": "🪙 Token copy",
   "Déplacer vers la rangée": "Move to row",
@@ -300,6 +313,10 @@ const TR = {
   "Créer un jeton": "Create a token",
   "Fermer ✕": "Close ✕",
   "Rechercher un jeton… (noms anglais : Treasure, Soldier, 1/1…)": "Search for a token… (Treasure, Soldier, 1/1…)",
+  "Rechercher un jeton (français ou anglais)… ex. Trésor, Soldat, 1/1": "Search a token (French or English)… e.g. Treasure, Soldier, 1/1",
+  "Filtrer (nom français ou anglais)…": "Filter (French or English name)…",
+  "Effacer": "Clear",
+  "Aucune carte ne correspond.": "No card matches.",
   "Sans image :": "No image:",
   "Nom du jeton (ex. Zombie décharné)": "Token name (e.g. Gaunt Zombie)",
   "F/E (ex. 2/2)": "P/T (e.g. 2/2)",
@@ -388,6 +405,21 @@ async function fetchScryfall(names, onProgress, lang = "fr") {
       for (const c of data.data || []) {
         const iu = c.image_uris || (c.card_faces && c.card_faces[0].image_uris) || null;
         const e = { s: iu ? iu.small : null, n: iu ? iu.normal : null, t: typeCat(c.type_line) };
+        /* Cartes recto-verso (transform, modal_dfc, jetons double face…) : elles n'ont
+           PAS d'image_uris à la racine, mais deux faces qui ont chacune la leur.
+           Les cartes « split / adventure / flip » ont bien image_uris à la racine :
+           ce sont des faces sur une seule image, on ne les traite pas comme du recto-verso. */
+        const bf = !c.image_uris && c.card_faces && c.card_faces[1] && c.card_faces[1].image_uris;
+        if (bf) {
+          e.bs = bf.small; e.bn = bf.normal;
+          e.bname = c.card_faces[1].name || null;
+          e.ft = typeCat(c.card_faces[0].type_line || "");   // type de la face avant
+          e.bt = typeCat(c.card_faces[1].type_line || "");   // type de la face arrière
+          /* Le type_line global d'une recto-verso est « Avant // Arrière ». Or typeCat
+             teste « land » en premier : « Sorcery // Land » serait classé terrain à tort.
+             L'instance démarre toujours sur la face avant, donc on prend son type. */
+          e.t = e.ft;
+        }
         imgs[c.name.toLowerCase()] = e;
         const short = c.name.split(" // ")[0].toLowerCase();
         if (!imgs[short]) imgs[short] = e;
@@ -410,6 +442,12 @@ async function fetchScryfall(names, onProgress, lang = "fr") {
             const iu = c.image_uris || (c.card_faces && c.card_faces[0].image_uris) || null;
             if (iu) { e.frs = iu.small; e.frn = iu.normal; }
             e.fr = c.printed_name || (c.card_faces && c.card_faces[0].printed_name) || null;
+            // face arrière en français (image + nom imprimé)
+            const bf = !c.image_uris && c.card_faces && c.card_faces[1] && c.card_faces[1].image_uris;
+            if (bf) {
+              e.frbs = bf.small; e.frbn = bf.normal;
+              e.frb = c.card_faces[1].printed_name || null;
+            }
           }
         }
       } catch (e) {}
@@ -425,8 +463,17 @@ function buildInstances(deck) {
     const im = deck.imgs[name.toLowerCase()] || {};
     const ov = (deck.arts || {})[name.toLowerCase()] || null;
     const t = im.t || "other";
+    /* Recto-verso : on embarque la face arrière (bimg/bimgN/bfn/bname) et le type
+       de chaque face, pour pouvoir transformer la carte en jeu. Une illustration
+       choisie à la main (ov) remplace la face avant et fournit sa propre arrière. */
+    const dfc = ov ? !!ov.bs : !!(im.bs || im.frbs);
+    const back = dfc ? (ov ? { s: ov.bs, n: ov.bn, fn: ov.bfn || null }
+                           : { s: im.frbs || im.bs, n: im.frbn || im.bn, fn: im.frb || null }) : null;
     return { id: uid(), name, fn: ov ? (ov.fn || null) : (im.fr || null),
       img: ov ? ov.s : (im.frs || im.s || null), imgN: ov ? ov.n : (im.frn || im.n || null),
+      ...(dfc ? { dfc: true, flipped: false, bimg: back.s || null, bimgN: back.n || null,
+                  bfn: back.fn, bname: im.bname || null,
+                  ft: im.ft || t, bt: im.bt || t } : {}),
       t, row: t, host: null, tapped: false, faceDown: false, counters: 0, ...extra };
   };
   const cards = [];
@@ -507,7 +554,17 @@ a.btn{text-decoration:none; display:inline-flex; align-items:center; gap:4px;}
   background:rgba(8,17,19,.92); color:var(--gold); border:1px solid var(--gold); font-size:12px; line-height:1;
   cursor:pointer; opacity:0; transition:opacity .12s; padding:0; display:flex; align-items:center; justify-content:center;}
 .card-w:hover .kebab{opacity:1;}
+/* pastille « transformer » des cartes recto-verso : discrète, nette au survol */
+.dfcbtn{position:absolute; top:2px; left:24px; z-index:8; width:20px; height:20px; border-radius:50%;
+  background:rgba(8,17,19,.92); color:var(--gold); border:1px solid var(--gold2); font-size:12px; line-height:1;
+  cursor:pointer; opacity:.55; transition:opacity .12s, border-color .12s; padding:0; display:flex; align-items:center; justify-content:center;}
+.card-w:hover .dfcbtn{opacity:1; border-color:var(--gold);}
+.dfcbtn:hover{color:#fff;}
 .att-target{outline:2px dashed var(--gold); outline-offset:3px; border-radius:8px; cursor:crosshair; animation:pulse 1.4s infinite;}
+.attbadge{min-width:23px; height:16px; padding:0 5px; border-radius:9px; font-size:10px; font-weight:800; line-height:15px;
+  background:rgba(8,17,19,.92); color:var(--gold); border:1px solid var(--gold2); cursor:pointer; white-space:nowrap;
+  box-shadow:0 1px 5px rgba(0,0,0,.55); transition:border-color .12s, color .12s;}
+.attbadge:hover{border-color:var(--gold); color:#fff;}
 
 /* -- plateau : rangées -- */
 .bfrow{position:relative; display:flex; align-items:center; justify-content:center;
@@ -619,10 +676,18 @@ body.en .handzone.drop-over::after{content:"Return to hand" !important;}
 .menu .sec{padding:5px 10px 2px; font-size:9px; letter-spacing:.14em; color:var(--dim); text-transform:uppercase; border-top:1px solid var(--line); margin-top:3px;}
 .modal-bg{position:fixed; inset:0; background:rgba(4,10,11,.78); z-index:90; display:flex; align-items:center; justify-content:center; padding:20px;}
 .modal{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px; max-width:860px; width:100%; max-height:88vh; max-height:88dvh; overflow:auto;}
-.preview{position:fixed; left:calc(var(--railw) + 14px); top:50%; transform:translateY(-50%); z-index:80;
-  width:min(280px, 21vw); pointer-events:none; filter:drop-shadow(0 10px 30px rgba(0,0,0,.85));}
-.preview img{width:100%; border-radius:12px;}
-.pv-marks{margin-top:6px; display:flex; flex-direction:column; gap:3px; max-height:30vh; overflow:auto;}
+/* aperçu en grand : conteneur pleine hauteur, contenu centré et borné pour
+   qu'il reste TOUJOURS entièrement visible (jamais coupé en haut/bas), et
+   au-dessus des modales (z-index 200 > modale 90, menu 100). */
+.preview{position:fixed; left:calc(var(--railw) + 14px); top:8px; bottom:8px; z-index:200;
+  width:min(300px, 23vw); pointer-events:none; filter:drop-shadow(0 10px 30px rgba(0,0,0,.85));
+  display:flex; flex-direction:column; justify-content:center; align-items:flex-start; gap:6px;}
+.preview img{width:100%; max-height:62vh; object-fit:contain; border-radius:12px;}
+.preview .pv-txtwrap{width:100%;}
+/* quand une fenêtre de recherche est ouverte, on colle l'aperçu au bord
+   gauche pour qu'il ne recouvre pas la fenêtre (et reste bien visible). */
+body.has-modal .preview{left:10px;}
+.pv-marks{margin-top:0; display:flex; flex-direction:column; gap:3px; max-height:26vh; overflow:auto; width:100%;}
 .pv-mark{background:rgba(8,17,19,.96); border:1px solid var(--gold2); border-radius:8px; padding:3px 9px; font-size:12.5px; color:var(--ink);}
 .pv-mark b{color:var(--gold);}
 /* pendant un glisser-déposer : on cache l'aperçu et on neutralise le zoom
@@ -668,7 +733,7 @@ const Pips = ({ size = 9 }) => (
 );
 
 /* ---------- carte ---------- */
-function Card({ card, w = 76, mine = true, zone, onTap, onMenu, onHover, big = false }) {
+function Card({ card, w = 76, mine = true, zone, onTap, onMenu, onHover, onTransform, big = false }) {
   const h = Math.round(w * 1.4);
   const inner = card.faceDown ? (
     <div className={"card-i card-back" + (card.tapped ? " tapped" : "")}><Pips size={5} /></div>
@@ -679,7 +744,7 @@ function Card({ card, w = 76, mine = true, zone, onTap, onMenu, onHover, big = f
     </div>
   ) : (
     <div className={"card-i" + (card.tapped ? " tapped" : "") + (card.isCmdr ? " cmdr" : "")}>
-      {card.img ? <img src={big && card.imgN ? card.imgN : card.img} alt={dn(card)} draggable={false} /> : (
+      {fimg(card) ? <img src={big ? (fimgN(card) || fimg(card)) : fimg(card)} alt={dn(card)} draggable={false} /> : (
         <div className="card-txt" style={{ fontSize: Math.max(7.5, Math.round(w / 7.5)) }}>
           <div>{dn(card)}</div>
           {card.pt && <div className="ctpt" style={{ fontSize: Math.max(9, Math.round(w / 5.5)) }}>{card.pt}</div>}
@@ -702,6 +767,11 @@ function Card({ card, w = 76, mine = true, zone, onTap, onMenu, onHover, big = f
         <button className="kebab" title="Actions"
           onClick={(e) => { e.stopPropagation(); onMenu(e, card, zone); }}
           onDragStart={(e) => e.preventDefault()}>⋮</button>
+      )}
+      {onTransform && card.dfc && !card.faceDown && (
+        <button className="dfcbtn" title={t("Transformer (recto-verso)")}
+          onClick={(e) => { e.stopPropagation(); onTransform(card.id); }}
+          onDragStart={(e) => e.preventDefault()}>⟳</button>
       )}
       {card.counters > 0 && !card.faceDown && <div className="badge">{card.counters}</div>}
       {!card.faceDown && card.marks && Object.keys(card.marks).length > 0 && (
@@ -758,6 +828,11 @@ function DeckBuilder({ onSave, onClose, existing }) {
           {parsed && <span className="hint">{total} {t("cartes")} · {t("cliquez sur une carte pour la désigner")} <b style={{ color: "var(--gold)" }}>{t("commandant ★")}</b> {t("(2 max pour Partenaires)")}</span>}
         </div>
         {warn && <div style={{ color: "#e0a090", fontSize: 12, marginBottom: 8 }}>{warn}</div>}
+        {existing && !busy && (
+          <div className="hint" style={{ marginBottom: 8 }}>
+            {t("Deck importé avant la prise en charge du recto-verso ? Recliquez sur « Importer les cartes » pour récupérer les faces arrière.")}
+          </div>
+        )}
         {parsed && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, maxHeight: 300, overflow: "auto", padding: 4, background: "rgba(0,0,0,.25)", borderRadius: 10 }}>
             {parsed.map((l, i) => {
@@ -951,22 +1026,39 @@ const BANDS = { creature: 0.18, other: 0.5, land: 0.84 };
 const ZLBL = { hand: "la main", battlefield: "le champ de bataille", graveyard: "le cimetière", exile: "l'exil", library: "la bibliothèque", command: "la zone de commandement" };
 const ROWNAME = { land: "Terrains", creature: "Créatures", other: "Artefacts · Enchantements · Autres" };
 
-function Stack({ host, atts, w, off, mine, onTap, onMenu, onHover, onAttachDrop, attachTarget }) {
+function Stack({ host, atts, w, off, mine, mirror, collapsed, onToggle, onTap, onMenu, onHover, onTransform, onAttachDrop, attachTarget }) {
   const h = Math.round(w * 1.4);
+  const n = atts.length;
+  /* La carte HÔTE reste ancrée à sa position de pose (elle ne bouge jamais,
+     quel que soit le nombre d'équipements) : on la garde toujours visible et
+     survolable. Les attachements se déploient vers le bord EXTÉRIEUR du joueur
+     (vers le haut pour l'adversaire, vers le bas pour soi), donc à l'écart de
+     la ligne médiane où ils seraient rognés. Le décalage se resserre quand il y
+     en a beaucoup ; « rangé » (collapsed) les glisse presque sous l'hôte. */
+  const spread = collapsed ? 3 : (n ? Math.min(off, Math.round((h * 1.15) / n)) : off);
+  const dir = mirror ? -1 : 1; // adversaire (miroir) : vers le haut ; moi : vers le bas
   return (
     <div className={attachTarget ? "att-target" : ""}
-      style={{ position: "relative", width: w + (atts.length ? 12 : 0), height: h + atts.length * off, flex: "none" }}
+      style={{ position: "relative", width: w + (n ? 12 : 0), height: h, flex: "none" }}
       onDragOver={mine ? (e) => { e.preventDefault(); e.stopPropagation(); } : undefined}
       onDrop={mine ? (e) => { e.preventDefault(); e.stopPropagation(); try { const d = JSON.parse(e.dataTransfer.getData("text/plain")); onAttachDrop(host, d); } catch (er) {} } : undefined}
     >
       {atts.map((a, i) => (
-        <div key={a.id} style={{ position: "absolute", top: i * off, left: 12, zIndex: i + 1 }}>
-          <Card card={a} w={w - 12} mine={mine} zone="battlefield" onTap={onTap} onMenu={onMenu} onHover={onHover} />
+        <div key={a.id} style={{ position: "absolute", top: dir * (n - i) * spread, left: 12, zIndex: i + 1 }}>
+          <Card card={a} w={w - 12} mine={mine} zone="battlefield" onTap={onTap} onMenu={onMenu} onHover={onHover} onTransform={onTransform} />
         </div>
       ))}
-      <div style={{ position: "absolute", bottom: 0, left: 0, zIndex: atts.length + 2 }}>
-        <Card card={host} w={w} mine={mine} zone="battlefield" onTap={onTap} onMenu={onMenu} onHover={onHover} />
+      <div style={{ position: "absolute", top: 0, left: 0, zIndex: n + 2 }}>
+        <Card card={host} w={w} mine={mine} zone="battlefield" onTap={onTap} onMenu={onMenu} onHover={onHover} onTransform={onTransform} />
       </div>
+      {n > 0 && onToggle && (
+        <button className="attbadge" style={{ position: "absolute", top: h - 15, left: w - 27, zIndex: n + 3 }}
+          onClick={(e) => { e.stopPropagation(); onToggle(host.id); }}
+          onDragStart={(e) => e.preventDefault()}
+          title={collapsed ? t("Déployer les équipements") : t("Ranger les équipements")}>
+          ⚔ {n} {collapsed ? "▸" : "▾"}
+        </button>
+      )}
     </div>
   );
 }
@@ -978,9 +1070,11 @@ function Stack({ host, atts, w, off, mine, onTap, onMenu, onHover, onAttachDrop,
    carte) exprimées dans le repère de SON propriétaire ; l'adversaire est
    affiché en miroir vertical, comme un vrai face-à-face. Trois bandes
    translucides rappellent les zones classiques (visuel seulement). */
-function Battlefield({ cards, mine, mirror, areaH, areaW, cardHFix, snap, onPlace, onTap, onMenu, onHover, onAttachDrop, attachMode, waiting }) {
+function Battlefield({ cards, mine, mirror, areaH, areaW, cardHFix, snap, onPlace, onTap, onMenu, onHover, onTransform, onAttachDrop, attachMode, waiting }) {
   const ref = useRef(null);
   const [mw, setMw] = useState(0);
+  const [tucked, setTucked] = useState({}); // id hôte -> équipements rangés (repliés)
+  const toggleTuck = (id) => setTucked((m) => ({ ...m, [id]: !m[id] }));
   useLayoutEffect(() => { if (ref.current) setMw(ref.current.clientWidth); }, [areaW, areaH]);
   const hosts = cards.filter((c) => !c.host);
   const attOf = (id) => cards.filter((c) => c.host === id);
@@ -1039,7 +1133,7 @@ function Battlefield({ cards, mine, mirror, areaH, areaW, cardHFix, snap, onPlac
         const p = posOf(c);
         return (
           <div key={c.id} style={{ position: "absolute", left: Math.round(p.x * W - w / 2), top: Math.round(p.y * H - cardH / 2) }}>
-            <Stack host={c} atts={attOf(c.id)} w={w} off={20} mine={mine} onTap={onTap} onMenu={onMenu} onHover={onHover}
+            <Stack host={c} atts={attOf(c.id)} w={w} off={20} mine={mine} mirror={mirror} collapsed={!!tucked[c.id]} onToggle={toggleTuck} onTap={onTap} onMenu={onMenu} onHover={onHover} onTransform={onTransform}
               onAttachDrop={onAttachDrop} attachTarget={!!attachMode && mine && attachMode !== c.id} />
           </div>
         );
@@ -1221,6 +1315,14 @@ function Game({ room, onQuit, uiLang, onLang }) {
   const centerRef = useRef(null);
   const centerW = useWidth(centerRef, !!my);
 
+  /* signale au CSS qu'une fenêtre de recherche est ouverte : l'aperçu en grand
+     se colle alors au bord gauche pour ne pas recouvrir la fenêtre. */
+  useEffect(() => {
+    const open = !!(viewer || topN || tokenPick || artPick);
+    document.body.classList.toggle("has-modal", open);
+    return () => document.body.classList.remove("has-modal");
+  }, [viewer, topN, tokenPick, artPick]);
+
   const freshState = () => {
     const { library, command } = buildInstances(deck);
     const hand = library.splice(0, 7);
@@ -1277,7 +1379,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
         const i2 = zones[zn].findIndex((c) => c.id === ev.id);
         if (i2 >= 0) {
           const arr = [...zones[zn]]; const [c] = arr.splice(i2, 1);
-          found = { ...c, faceDown: false, tapped: false, counters: 0, marks: null, groups: null, host: null, bx: null, by: null };
+          found = { ...c, faceDown: false, flipped: false, tapped: false, counters: 0, marks: null, groups: null, host: null, bx: null, by: null };
           zones[zn] = arr.map((x) => (x.host === ev.id ? { ...x, host: null } : x));
           break;
         }
@@ -1449,7 +1551,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
       const i = src.findIndex((c) => c.id === id); if (i < 0) return s;
       const [c0] = src.splice(i, 1); const card = { ...c0 };
       const shown = card.faceDown && from !== "hand" ? t("une carte face cachée") : dn(card);
-      if (to !== "battlefield") { card.tapped = false; card.faceDown = false; card.counters = 0; card.marks = null; card.groups = null; card.bx = null; card.by = null; }
+      if (to !== "battlefield") { card.tapped = false; card.faceDown = false; card.flipped = false; card.counters = 0; card.marks = null; card.groups = null; card.bx = null; card.by = null; }
       card.host = null;
       if (to === "battlefield") {
         card.row = opt.row || card.row || card.t || "other";
@@ -1500,7 +1602,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
     });
     const c = { ...card, host: null, groups: null, tapped: false, bx: null, by: null,
       ownerSeat: card.ownerSeat || curOppSeat, ownerName: card.ownerName || oppName || curOppSeat };
-    if (toZone !== "battlefield") { c.faceDown = false; c.counters = 0; c.marks = null; }
+    if (toZone !== "battlefield") { c.faceDown = false; c.flipped = false; c.counters = 0; c.marks = null; }
     setMy((s) => {
       const dst = [...s.zones[toZone]]; dst.push(c);
       const msg = fromZone === "battlefield"
@@ -1640,13 +1742,32 @@ function Game({ room, onQuit, uiLang, onLang }) {
     return { ...s, zones: { ...s.zones, battlefield: s.zones.battlefield.map((c) => ids.has(c.id) ? { ...c, counters: Math.max(0, c.counters + d) } : c) } };
   });
   const flip = (id) => setMy((s) => ({ ...s, zones: { ...s.zones, battlefield: s.zones.battlefield.map((c) => c.id === id ? { ...c, faceDown: !c.faceDown } : c) } }));
+  /* Transformer une carte recto-verso : on bascule la face visible. Le type de la
+     face affichée (ft/bt) devient le type courant, pour rester cohérent si on
+     range la carte par rangée. La position et les marqueurs sont préservés. */
+  const transform = (id) => setMy((s) => {
+    const card = s.zones.battlefield.find((c) => c.id === id);
+    if (!card || !card.dfc) return s;
+    const flipped = !card.flipped;
+    const nt = (flipped ? card.bt : card.ft) || card.t;
+    const bf = { ...card, flipped, t: nt };
+    const shown = flipped ? (card.bfn || card.bname || card.name) : (card.fn || card.name);
+    return withLog({ ...s, zones: { ...s.zones, battlefield: s.zones.battlefield.map((c) => c.id === id ? bf : c) } },
+      `${t("transforme")} ${dn(card)} → ${shown}`);
+  });
   const clone = (card) => setMy((s) => withLog({ ...s, zones: { ...s.zones, battlefield: [...s.zones.battlefield, { ...card, id: uid(), token: true, tapped: false, host: null }] } }, `${t("crée une copie-jeton de")} ${dn(card)}`));
 
   const applyArt = (card, p, all) => {
     const key = card.name.toLowerCase();
     const im = deck.imgs[key] || {};
-    const v = p ? { img: p.s, imgN: p.n, fn: p.fn || null }
-      : { img: im.frs || im.s || null, imgN: im.frn || im.n || null, fn: im.fr || null };
+    /* On applique aussi la face arrière de l'impression choisie : sans ça, une
+       carte recto-verso perdrait son verso en changeant d'illustration. */
+    const v = p ? { img: p.s, imgN: p.n, fn: p.fn || null,
+                    ...(p.bs ? { dfc: true, bimg: p.bs, bimgN: p.bn || null, bfn: p.bfn || null }
+                             : { dfc: false, flipped: false, bimg: null, bimgN: null, bfn: null }) }
+      : { img: im.frs || im.s || null, imgN: im.frn || im.n || null, fn: im.fr || null,
+          ...((im.bs || im.frbs) ? { dfc: true, bimg: im.frbs || im.bs, bimgN: im.frbn || im.bn, bfn: im.frb || null }
+                                 : { dfc: false, flipped: false, bimg: null, bimgN: null, bfn: null }) };
     setMy((s) => {
       const zones = {};
       for (const zn of Object.keys(s.zones))
@@ -1655,13 +1776,15 @@ function Game({ room, onQuit, uiLang, onLang }) {
     });
     if (all && !card.token) { // mémorisation dans le deck enregistré
       const arts = { ...(deck.arts || {}) };
-      if (p) arts[key] = { s: p.s, n: p.n, fn: p.fn || null, set: p.set }; else delete arts[key];
+      if (p) arts[key] = { s: p.s, n: p.n, fn: p.fn || null, set: p.set,
+                           ...(p.bs ? { bs: p.bs, bn: p.bn || null, bfn: p.bfn || null } : {}) };
+      else delete arts[key];
       deck.arts = arts;
       sget("mtg-decks").then((list) => { if (list) sset("mtg-decks", list.map((d) => d.id === deck.id ? { ...d, arts } : d)); });
     }
   };
 
-  const spawnToken = (tk) => setMy((s) => withLog({ ...s, zones: { ...s.zones, battlefield: [...s.zones.battlefield, { id: uid(), name: tk.name, img: tk.s || null, imgN: tk.n || null, pt: tk.pt || null, t: tk.t || "creature", row: tk.t || "creature", host: null, tapped: false, faceDown: false, counters: 0, token: true }] } }, `${t("crée un jeton")} ${tk.name}${tk.pt ? " " + tk.pt : ""}`));
+  const spawnToken = (tk) => setMy((s) => withLog({ ...s, zones: { ...s.zones, battlefield: [...s.zones.battlefield, { id: uid(), name: tk.name, fn: tk.fn || null, img: tk.s || null, imgN: tk.n || null, pt: tk.pt || null, t: tk.t || "creature", row: tk.t || "creature", host: null, tapped: false, faceDown: false, counters: 0, token: true }] } }, `${t("crée un jeton")} ${tk.fn || tk.name}${tk.pt ? " " + tk.pt : ""}`));
 
   const spawnGroup = (name) => setMy((s) => {
     const used = s.zones.battlefield.filter((c) => c.grp).length;
@@ -1941,7 +2064,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
           </div>
 
           <Battlefield cards={z.battlefield} mine areaH={myAreaH} areaW={rowW} cardHFix={cardHref} snap={snap} onPlace={placeAt} onTap={onBFTap}
-            onMenu={openMenu} onHover={setHover} onAttachDrop={doAttach} attachMode={attachMode} />
+            onMenu={openMenu} onHover={setHover} onTransform={transform} onAttachDrop={doAttach} attachMode={attachMode} />
 
           <HandFan cards={z.hand} vh={vh} zoneW={rowW} onPlay={(c) => move(c.id, "hand", "battlefield")}
             onMenu={openMenu} onHover={setHover} onDropCard={(id, from) => move(id, from, "hand")} />
@@ -2018,7 +2141,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
         const live = src.find((c) => c.id === menu.card.id) || menu.card;
         const groupNames = {};
         for (const g of z.battlefield) if (g.grp) groupNames[g.id] = dn(g);
-        return <CardMenu menu={{ ...menu, card: live }} close={closeMenu} move={move} bump={bump} flip={flip} clone={clone} tap={tapToggle}
+        return <CardMenu menu={{ ...menu, card: live }} close={closeMenu} move={move} bump={bump} flip={flip} transform={transform} clone={clone} tap={tapToggle}
           setRow={setRow} attach={(id) => setAttachMode(id)} detach={detach} pickArt={(c) => setArtPick(c)}
           remove={removeCard} bumpMark={bumpMark} groupNames={groupNames} steal={stealFromOpp} giveBack={returnToOwner}
           link={(id) => setLinkMode(id)} unlink={toggleLink}
@@ -2041,9 +2164,9 @@ function Game({ room, onQuit, uiLang, onLang }) {
         </div>
       )}
 
-      {tokenPick && <TokenPicker onSpawn={spawnToken} close={() => setTokenPick(false)} />}
+      {tokenPick && <TokenPicker onSpawn={spawnToken} close={() => setTokenPick(false)} onHover={setHover} />}
 
-      {artPick && <ArtPicker card={artPick} close={() => setArtPick(null)}
+      {artPick && <ArtPicker card={artPick} close={() => setArtPick(null)} onHover={setHover}
         onPick={(p, all) => { applyArt(artPick, p, all); setArtPick(null); }} />}
 
       {/* ===== visionneuses ===== */}
@@ -2051,12 +2174,12 @@ function Game({ room, onQuit, uiLang, onLang }) {
       {topN && <TopViewer n={topN} my={my} move={move} close={() => setTopN(null)} onHover={setHover} />}
 
       {/* ===== aperçu ===== */}
-      {hover && !hover.faceDown && (hover.imgN || hover.img) && (
-        <div className="preview"><img src={hover.imgN || hover.img} alt="" /><PreviewMarks card={hover} /></div>
+      {hover && !hover.faceDown && fimg(hover) && (
+        <div className="preview"><img src={fimgN(hover) || fimg(hover)} alt="" /><PreviewMarks card={hover} /></div>
       )}
-      {hover && !hover.faceDown && !hover.img && (
+      {hover && !hover.faceDown && !fimg(hover) && (
         <div className="preview">
-          <div style={{ background: "#1d1a26", border: "1px solid var(--gold)", borderRadius: 11, padding: 16, fontSize: 15, textAlign: "center" }}>{dn(hover)}</div>
+          <div className="pv-txtwrap" style={{ background: "#1d1a26", border: "1px solid var(--gold)", borderRadius: 11, padding: 16, fontSize: 15, textAlign: "center" }}>{dn(hover)}</div>
           <PreviewMarks card={hover} />
         </div>
       )}
@@ -2064,7 +2187,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
   );
 }
 
-function CardMenu({ menu, close, move, bump, flip, clone, tap, setRow, attach, detach, pickArt, remove, bumpMark, nameMark, link, unlink, groupNames = {}, steal, giveBack }) {
+function CardMenu({ menu, close, move, bump, flip, transform, clone, tap, setRow, attach, detach, pickArt, remove, bumpMark, nameMark, link, unlink, groupNames = {}, steal, giveBack }) {
   const { card, zone, x, y } = menu;
   const ref = useRef(null);
   const [pos, setPos] = useState({ left: x, top: y, ready: false });
@@ -2140,6 +2263,7 @@ function CardMenu({ menu, close, move, bump, flip, clone, tap, setRow, attach, d
             ✂ {t("Délier de")} « {groupNames[gid] || t("groupe")} »
           </button>
         ))}
+        {card.dfc && transform && !card.faceDown && it(t("⟳ Transformer"), () => transform(card.id))}
         {it(card.faceDown ? t("👁 Face visible") : t("🙈 Face cachée"), () => flip(card.id))}
         {it(t("🪙 Copie-jeton"), () => clone(card))}
         {sec(t("Déplacer vers la rangée"))}
@@ -2161,9 +2285,10 @@ function CardMenu({ menu, close, move, bump, flip, clone, tap, setRow, attach, d
   );
 }
 
-function ArtPicker({ card, onPick, close, showAll = true }) {
+function ArtPicker({ card, onPick, close, showAll = true, onHover }) {
   const [prints, setPrints] = useState(null);
   const [all, setAll] = useState(true);
+  useEffect(() => () => { if (onHover) onHover(null); }, []); // pas d'aperçu figé à la fermeture
   useEffect(() => {
     let stop = false;
     (async () => {
@@ -2176,8 +2301,11 @@ function ArtPicker({ card, onPick, close, showAll = true }) {
           const d = await r.json();
           for (const c of d.data || []) {
             const iu = c.image_uris || (c.card_faces && c.card_faces[0].image_uris);
+            const bf = !c.image_uris && c.card_faces && c.card_faces[1] && c.card_faces[1].image_uris;
             if (iu) out.push({ id: c.id, s: iu.small, n: iu.normal, set: (c.set || "").toUpperCase(),
-              setName: c.set_name, lang: c.lang, fn: c.printed_name || (c.card_faces && c.card_faces[0].printed_name) || null });
+              setName: c.set_name, lang: c.lang, fn: c.printed_name || (c.card_faces && c.card_faces[0].printed_name) || null,
+              // face arrière de cette impression, pour garder le recto-verso
+              ...(bf ? { bs: bf.small, bn: bf.normal, bfn: c.card_faces[1].printed_name || c.card_faces[1].name || null } : {}) });
           }
           url = d.has_more ? d.next_page : null;
         }
@@ -2210,7 +2338,9 @@ function ArtPicker({ card, onPick, close, showAll = true }) {
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
             {prints.map((p) => (
               <div key={p.id} onClick={() => onPick(p, all)} title={`${p.setName} — ${t("cliquez pour choisir")}`}
-                style={{ width: 118, cursor: "pointer" }}>
+                style={{ width: 118, cursor: "pointer" }}
+                onMouseEnter={() => onHover && onHover({ img: p.s, imgN: p.n, name: card.name, fn: p.fn })}
+                onMouseLeave={() => onHover && onHover(null)}>
                 <div className="card-i" style={{ height: 165 }}><img src={p.s} alt={p.setName} loading="lazy" /></div>
                 <div className="hint" style={{ marginTop: 3, textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {p.set} · {p.lang.toUpperCase()}
@@ -2224,9 +2354,55 @@ function ArtPicker({ card, onPick, close, showAll = true }) {
   );
 }
 
-const QUICK_TOKENS = ["Treasure", "Food", "Clue", "Blood", "Map", "Soldier", "Zombie", "Goblin", "Spirit", "Angel", "Dragon", "Beast", "Elemental", "Saproling", "Insect", "Thopter"];
+/* raccourcis de jetons : libellé français + terme de recherche anglais */
+const QUICK_TOKENS = [
+  { fr: "Trésor", en: "Treasure" }, { fr: "Nourriture", en: "Food" }, { fr: "Indice", en: "Clue" },
+  { fr: "Sang", en: "Blood" }, { fr: "Carte", en: "Map" }, { fr: "Soldat", en: "Soldier" },
+  { fr: "Zombie", en: "Zombie" }, { fr: "Gobelin", en: "Goblin" }, { fr: "Esprit", en: "Spirit" },
+  { fr: "Ange", en: "Angel" }, { fr: "Dragon", en: "Dragon" }, { fr: "Bête", en: "Beast" },
+  { fr: "Élémental", en: "Elemental" }, { fr: "Saprolin", en: "Saproling" }, { fr: "Insecte", en: "Insect" },
+  { fr: "Ornithoptère", en: "Thopter" },
+];
+/* dictionnaire français → anglais pour chercher les jetons en tapant en français.
+   Les noms de jetons de Scryfall sont en anglais : on traduit chaque mot saisi. */
+const TOKEN_FR = {
+  // artefacts / marqueurs courants
+  "tresor": "Treasure", "nourriture": "Food", "indice": "Clue", "sang": "Blood", "carte": "Map",
+  "or": "Gold", "pierre de puissance": "Powerstone", "reliquaire": "Shard", "citoyen": "Citizen",
+  "incubateur": "Incubator", "petrole": "Oil", "role": "Role",
+  // créatures fréquentes
+  "soldat": "Soldier", "zombie": "Zombie", "gobelin": "Goblin", "esprit": "Spirit", "ange": "Angel",
+  "dragon": "Dragon", "bete": "Beast", "elemental": "Elemental", "saprolin": "Saproling",
+  "insecte": "Insect", "ornithoptere": "Thopter", "chat": "Cat", "chien": "Dog", "loup": "Wolf",
+  "ours": "Bear", "elan": "Elk", "rat": "Rat", "serpent": "Snake", "araignee": "Spider",
+  "chauve-souris": "Bat", "squelette": "Skeleton", "guerrier": "Warrior", "chevalier": "Knight",
+  "clerc": "Cleric", "sorcier": "Wizard", "voleur": "Rogue", "pirate": "Pirate", "dinosaure": "Dinosaur",
+  "hydre": "Hydra", "demon": "Demon", "diablotin": "Imp", "faerie": "Faerie", "fee": "Faerie",
+  "golem": "Golem", "myr": "Myr", "construction": "Construct", "serviteur": "Servo", "reptile": "Lizard",
+  "lezard": "Lizard", "oiseau": "Bird", "chevre": "Goat", "cochon": "Boar", "sanglier": "Boar",
+  "elephant": "Elephant", "rhinoceros": "Rhino", "cheval": "Horse", "licorne": "Unicorn",
+  "pegase": "Pegasus", "griffon": "Griffin", "kraken": "Kraken", "leviathan": "Leviathan",
+  "pieuvre": "Octopus", "poisson": "Fish", "grenouille": "Frog", "crapaud": "Frog", "tortue": "Turtle",
+  "abeille": "Bee", "guepe": "Wasp", "scorpion": "Scorpion", "loup-garou": "Werewolf",
+  "vampire": "Vampire", "geant": "Giant", "ogre": "Ogre", "troll": "Troll", "orque": "Orc",
+  "kobold": "Kobold", "nain": "Dwarf", "elfe": "Elf", "gnome": "Gnome", "kavu": "Kavu",
+  "sabliste": "Sand", "goule": "Zombie", "moine": "Monk", "ninja": "Ninja", "samourai": "Samurai",
+  "assassin": "Assassin", "mercenaire": "Mercenary", "pilote": "Pilot", "citoyenne": "Citizen",
+  "pretre": "Cleric", "druide": "Druid", "chaman": "Shaman", "berserker": "Berserker",
+  "avatar": "Avatar", "ange-gardien": "Angel", "phenix": "Phoenix", "phénix": "Phoenix",
+  "serpent-de-mer": "Serpent", "hippogriffe": "Hippogriff", "sphinx": "Sphinx", "meduse": "Gorgon",
+  "gorgone": "Gorgon", "harpie": "Harpy", "spectre": "Wraith", "fantome": "Spirit",
+  "mille-pattes": "Centipede", "scarabee": "Beetle", "papillon": "Butterfly", "renard": "Fox",
+  "belette": "Weasel", "furet": "Ferret", "castor": "Beaver", "ecureuil": "Squirrel",
+  "cerf": "Elk", "biche": "Elk", "singe": "Ape", "gorille": "Ape", "crabe": "Crab",
+  "requin": "Shark", "baleine": "Whale", "dauphin": "Dolphin", "meduse-jelly": "Jellyfish",
+  "salamandre": "Salamander", "basilic": "Basilisk", "wyrm": "Wurm", "wurm": "Wurm",
+  "traqueur": "Horror", "horreur": "Horror", "cauchemar": "Nightmare", "golem-de-chair": "Zombie",
+  "pilier": "Wall", "mur": "Wall", "totem": "Totem", "fantassin": "Soldier", "eclaireur": "Scout",
+  "archer": "Archer", "barde": "Bard", "rodeur": "Ranger", "paladin": "Knight",
+};
 
-function TokenPicker({ onSpawn, close }) {
+function TokenPicker({ onSpawn, close, onHover }) {
   const [q, setQ] = useState("");
   const [res, setRes] = useState(null); // null = rien cherché, [] = aucun résultat
   const [busy, setBusy] = useState(false);
@@ -2236,27 +2412,48 @@ function TokenPicker({ onSpawn, close }) {
   const tRef = useRef(null);
   const makeCustom = () => {
     const name = cn.trim(); if (!name) return;
-    pick({ id: "txt-" + name.toLowerCase() + "-" + cpt.trim(), name, s: null, n: null, t: "creature", pt: cpt.trim() || null });
+    pick({ id: "txt-" + name.toLowerCase() + "-" + cpt.trim(), name, fn: name, s: null, n: null, t: "creature", pt: cpt.trim() || null });
+  };
+  /* traduit ce que l'utilisateur tape (français) vers l'anglais, mot à mot,
+     car les noms de jetons de Scryfall sont en anglais. Les mots inconnus
+     (déjà en anglais, chiffres comme « 1/1 »…) sont conservés tels quels. */
+  const toEnglish = (term) => {
+    const whole = TOKEN_FR[norm(term)];
+    if (whole) return whole;
+    return term.split(/\s+/).map((w) => TOKEN_FR[norm(w)] || w).join(" ");
+  };
+  const mapCards = (data) => {
+    const out = [];
+    for (const c of data || []) {
+      const iu = c.image_uris || (c.card_faces && c.card_faces[0].image_uris);
+      const fn = c.printed_name || (c.card_faces && c.card_faces[0].printed_name) || c.name;
+      out.push({ id: c.id, name: c.name, fn, s: iu ? iu.small : null, n: iu ? iu.normal : null,
+        t: typeCat(c.type_line), pt: c.power != null ? `${c.power}/${c.toughness}` : null, type: c.type_line });
+    }
+    return out;
   };
   const search = async (term) => {
     term = term.trim();
     if (!term) { setRes(null); return; }
     setBusy(true);
+    const en = toEnglish(term);
+    const run = async (fr) => {
+      const q = `t:token include:extras ${fr ? "lang:fr " : ""}${en}`;
+      const r = await fetch("https://api.scryfall.com/cards/search?order=name&unique=cards&q=" + encodeURIComponent(q));
+      return r.ok ? await r.json() : { data: [] };
+    };
     try {
-      const r = await fetch("https://api.scryfall.com/cards/search?order=name&q=" + encodeURIComponent(`t:token include:extras ${term}`));
-      const d = r.ok ? await r.json() : { data: [] };
-      const out = [];
-      for (const c of d.data || []) {
-        const iu = c.image_uris || (c.card_faces && c.card_faces[0].image_uris);
-        out.push({ id: c.id, name: c.name, s: iu ? iu.small : null, n: iu ? iu.normal : null,
-          t: typeCat(c.type_line), pt: c.power != null ? `${c.power}/${c.toughness}` : null, type: c.type_line });
-      }
-      setRes(out);
+      // 1) on tente d'abord les impressions françaises (nom + image en français)
+      let d = await run(true);
+      // 2) rien en français ? on retombe sur l'anglais pour ne rien manquer
+      if (!d.data || d.data.length === 0) d = await run(false);
+      setRes(mapCards(d.data));
     } catch (e) { setRes([]); }
     setBusy(false);
   };
   const onChange = (v) => { setQ(v); clearTimeout(tRef.current); tRef.current = setTimeout(() => search(v), 450); };
   const pick = (tk) => { onSpawn(tk); setMade((m) => ({ ...m, [tk.id]: (m[tk.id] || 0) + 1 })); };
+  useEffect(() => () => { if (onHover) onHover(null); }, []); // évite un aperçu figé à la fermeture
   return (
     <div className="modal-bg" onClick={close}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -2264,13 +2461,16 @@ function TokenPicker({ onSpawn, close }) {
           <h3 className="disp" style={{ margin: 0, fontSize: 14, color: "var(--gold)", textTransform: "none", letterSpacing: ".06em" }}>{t("Créer un jeton")}</h3>
           <button className="btn ghost" onClick={close}>{t("Fermer ✕")}</button>
         </div>
-        <input autoFocus placeholder={t("Rechercher un jeton… (noms anglais : Treasure, Soldier, 1/1…)")} value={q}
+        <input autoFocus placeholder={t("Rechercher un jeton (français ou anglais)… ex. Trésor, Soldat, 1/1")} value={q}
           onChange={(e) => onChange(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
         <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 8 }}>
-          {QUICK_TOKENS.map((n) => (
-            <button key={n} className="btn ghost" style={{ padding: "3px 9px", fontSize: 11 }}
-              onClick={() => { setQ(n); search(n); }}>{n}</button>
-          ))}
+          {QUICK_TOKENS.map((tk) => {
+            const label = UI_LANG === "en" ? tk.en : tk.fr;
+            return (
+              <button key={tk.en} className="btn ghost" style={{ padding: "3px 9px", fontSize: 11 }}
+                onClick={() => { setQ(label); search(tk.en); }}>{label}</button>
+            );
+          })}
         </div>
         <div className="row" style={{ marginBottom: 10, alignItems: "center", gap: 6 }}>
           <span className="hint" style={{ flex: "none" }}>{t("Sans image :")}</span>
@@ -2285,19 +2485,21 @@ function TokenPicker({ onSpawn, close }) {
         {!busy && res && res.length === 0 && (
           <div className="hint" style={{ padding: 14, textAlign: "center" }}>
             {t("Aucun jeton trouvé (ou réseau indisponible).")}{" "}
-            {q.trim() && <button className="btn ghost" onClick={() => pick({ id: "txt-" + q.trim().toLowerCase(), name: q.trim(), s: null, n: null, t: "creature", pt: cpt.trim() || null })}>{t("Créer")} « {q.trim()} » {t("sans image")}</button>}
+            {q.trim() && <button className="btn ghost" onClick={() => pick({ id: "txt-" + q.trim().toLowerCase(), name: q.trim(), fn: q.trim(), s: null, n: null, t: "creature", pt: cpt.trim() || null })}>{t("Créer")} « {q.trim()} » {t("sans image")}</button>}
           </div>
         )}
         {!busy && res && res.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
             {res.map((tk) => (
-              <div key={tk.id} onClick={() => pick(tk)} title={`${tk.type} — ${t("cliquez pour créer")}`} style={{ width: 118, cursor: "pointer", position: "relative" }}>
+              <div key={tk.id} onClick={() => pick(tk)} title={`${tk.type} — ${t("cliquez pour créer")}`} style={{ width: 118, cursor: "pointer", position: "relative" }}
+                onMouseEnter={() => onHover && onHover({ img: tk.s, imgN: tk.n, name: tk.name, fn: tk.fn })}
+                onMouseLeave={() => onHover && onHover(null)}>
                 <div className="card-i" style={{ height: 165 }}>
-                  {tk.s ? <img src={tk.s} alt={tk.name} loading="lazy" /> : <div className="card-txt">{tk.name}</div>}
+                  {tk.s ? <img src={tk.s} alt={tk.fn || tk.name} loading="lazy" /> : <div className="card-txt">{tk.fn || tk.name}</div>}
                 </div>
                 {made[tk.id] > 0 && <div className="badge">✓ ×{made[tk.id]}</div>}
                 <div className="hint" style={{ marginTop: 3, textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {tk.name}{tk.pt ? ` · ${tk.pt}` : ""}
+                  {tk.fn || tk.name}{tk.pt ? ` · ${tk.pt}` : ""}
                 </div>
               </div>
             ))}
@@ -2309,11 +2511,16 @@ function TokenPicker({ onSpawn, close }) {
 }
 
 function ZoneViewer({ viewer, my, opp, move, doShuffle, close, onHover, steal }) {
+  const [q, setQ] = useState("");
+  useEffect(() => () => { if (onHover) onHover(null); }, []); // pas d'aperçu figé à la fermeture
   const isMe = viewer.who === "me";
   const owner = isMe ? my : opp;
   if (!owner) return null;
   const all = owner.zones[viewer.zone] || [];
   const cards = viewer.limit ? all.slice(0, viewer.limit) : all;
+  const nq = norm(q);
+  const shown = nq ? cards.filter((c) => norm(c.name).includes(nq) || norm(dn(c)).includes(nq) || (c.fn && norm(c.fn).includes(nq))) : cards;
+  const showFilter = !viewer.limit && cards.length > 4;
   const title = viewer.limit
     ? `${t("Dessus de")} ${t(ZLBL[viewer.zone])} — ${owner.name}`
     : `${t(ZLBL[viewer.zone])} — ${owner.name} (${all.length})`;
@@ -2327,11 +2534,19 @@ function ZoneViewer({ viewer, my, opp, move, doShuffle, close, onHover, steal })
             <button className="btn ghost" onClick={close}>{t("Fermer ✕")}</button>
           </div>
         </div>
+        {showFilter && (
+          <div className="row" style={{ marginBottom: 12, alignItems: "center", gap: 8 }}>
+            <input autoFocus placeholder={t("Filtrer (nom français ou anglais)…")} value={q}
+              onChange={(e) => setQ(e.target.value)} style={{ flex: 1, minWidth: 180 }} />
+            <span className="hint" style={{ flex: "none" }}>{shown.length} / {cards.length}</span>
+            {q && <button className="btn ghost" style={{ flex: "none" }} onClick={() => setQ("")}>{t("Effacer")}</button>}
+          </div>
+        )}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-          {cards.map((c) => (
+          {shown.map((c) => (
             <div key={c.id} style={{ width: 96 }}>
               <div className="card-i" style={{ height: 134 }} onMouseEnter={() => onHover(c)} onMouseLeave={() => onHover(null)}>
-                {c.img ? <img src={c.img} alt={c.name} /> : <div className="card-txt">{dn(c)}</div>}
+                {fimg(c) ? <img src={fimg(c)} alt={dn(c)} /> : <div className="card-txt">{dn(c)}</div>}
               </div>
               {isMe && (
                 <div style={{ display: "flex", gap: 3, marginTop: 4, flexWrap: "wrap" }}>
@@ -2350,7 +2565,7 @@ function ZoneViewer({ viewer, my, opp, move, doShuffle, close, onHover, steal })
               )}
             </div>
           ))}
-          {cards.length === 0 && <div className="hint">{t("Zone vide.")}</div>}
+          {shown.length === 0 && <div className="hint">{cards.length === 0 ? t("Zone vide.") : t("Aucune carte ne correspond.")}</div>}
         </div>
         {isMe && viewer.zone === "library" && <div className="hint" style={{ marginTop: 10 }}>{t("N'oubliez pas de mélanger après une recherche !")}</div>}
       </div>
@@ -2373,7 +2588,7 @@ function TopViewer({ n, my, move, close, onHover }) {
             <div key={c.id} style={{ width: 96 }}>
               <div className="hint" style={{ textAlign: "center" }}>#{i + 1}</div>
               <div className="card-i" style={{ height: 134 }} onMouseEnter={() => onHover(c)} onMouseLeave={() => onHover(null)}>
-                {c.img ? <img src={c.img} alt={c.name} /> : <div className="card-txt">{dn(c)}</div>}
+                {fimg(c) ? <img src={fimg(c)} alt={dn(c)} /> : <div className="card-txt">{dn(c)}</div>}
               </div>
               <div style={{ display: "flex", gap: 3, marginTop: 4, flexWrap: "wrap" }}>
                 <button className="btn ghost" style={{ padding: "2px 6px", fontSize: 10 }} onClick={() => move(c.id, "library", "hand")}>{t("Main")}</button>
