@@ -99,6 +99,13 @@ const dn = (c) => (c && (c.flipped ? (c.bfn || c.bname || c.fn || c.name) : (c.f
 /* images de la face actuellement visible (petite et grande) */
 const fimg = (c) => (c && c.flipped && c.bimg) ? c.bimg : (c && c.img) || null;
 const fimgN = (c) => (c && c.flipped && (c.bimgN || c.bimg)) ? (c.bimgN || c.bimg) : (c && (c.imgN || c.img)) || null;
+
+/* Marqueurs +1/+1 : `counters` est un entier SIGNÉ. Positif = marqueurs +1/+1,
+   négatif = marqueurs -1/-1. Les deux s'annulent donc naturellement (règle 704.5q).
+   On affiche « +3/+3 » ou « −2/−2 » plutôt qu'un simple nombre. */
+const ptLabel = (n) => (n > 0 ? `+${n}/+${n}` : `−${Math.abs(n)}/−${Math.abs(n)}`);
+/* marqueurs nommés proposés d'office, pour ne pas avoir à les saisir à la main */
+const PRESET_MARKS = ["poison", "loyauté", "charge", "étourdissement", "bouclier", "défense"];
 /* normalise pour comparer sans tenir compte de la casse ni des accents
    (utile pour filtrer/chercher indifféremment en français ou en anglais) */
 const norm = (s) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
@@ -274,11 +281,35 @@ const TR = {
   "⤵ Engager": "⤵ Tap",
   "✂ Détacher": "✂ Detach",
   "🔗 Attacher à… (cliquez la cible)": "🔗 Attach to… (click the target)",
+  "🎯 Marqueurs": "🎯 Counters",
+  "🎯 Marqueurs du groupe": "🎯 Group counters",
+  "🃏 Carte & état": "🃏 Card & state",
+  "📐 Rangée": "📐 Row",
+  "📤 Envoyer vers…": "📤 Send to…",
   "Marqueurs & état": "Counters & state",
-  "➕ Ajouter un marqueur": "➕ Add a counter",
-  "➖ Retirer un marqueur": "➖ Remove a counter",
+  "Marqueurs +1/+1": "+1/+1 counters",
+  "Aucun marqueur +1/+1": "No +1/+1 counters",
+  "Ajouter un marqueur +1/+1": "Add a +1/+1 counter",
+  "Ajouter un marqueur -1/-1": "Add a -1/-1 counter",
+  "poison": "poison",
+  "loyauté": "loyalty",
+  "charge": "charge",
+  "étourdissement": "stun",
+  "bouclier": "shield",
+  "défense": "defense",
   "🏷 Marqueur nommé…": "🏷 Named counter…",
   "👁 Face visible": "👁 Face up",
+  "👁 Révéler à tous": "👁 Reveal to everyone",
+  "révèle": "reveals",
+  "attaque avec": "attacks with",
+  "retire de l'attaque": "removes from combat",
+  "en attaque": "attacking",
+  "Attaquer": "Attack",
+  "Attaque en cours": "Attacking",
+  "Mode attaque : cliquez une créature pour la déclarer attaquante": "Attack mode: click a creature to declare it as an attacker",
+  "Mode attaque : cliquez vos créatures pour les déclarer attaquantes": "Attack mode: click your creatures to declare them as attackers",
+  "Quitter (Échap)": "Exit (Esc)",
+  "Clic : fouiller · Glissez la carte du dessus pour la déplacer": "Click: search · Drag the top card to move it",
   "⟳ Transformer": "⟳ Transform",
   "Deck importé avant la prise en charge du recto-verso ? Recliquez sur « Importer les cartes » pour récupérer les faces arrière.": "Deck imported before double-faced support? Click “Import cards” again to fetch the back faces.",
   "Transformer (recto-verso)": "Transform (double-faced)",
@@ -509,6 +540,14 @@ body{margin:0; overflow:hidden; background:var(--felt); color:var(--ink);
 .btn.gold:hover{filter:brightness(1.08);}
 .btn.ghost{background:transparent;}
 .btn.danger:hover{border-color:var(--red); color:#ffb3a3;}
+/* bouton du mode attaque : rouge, bien visible, et pulsant quand le mode est actif */
+.btn.atkbtn{background:linear-gradient(180deg,#d2603f,#8f3220); color:#fff2ee; border-color:#e2836a;
+  font-weight:700; letter-spacing:.04em;}
+.btn.atkbtn:hover{filter:brightness(1.1); border-color:#ffb3a3; color:#fff;}
+.btn.atkbtn.on{background:linear-gradient(180deg,#f0785a,#a53a24); border-color:#fff; color:#fff;
+  box-shadow:0 0 0 2px rgba(193,79,55,.45), 0 0 16px rgba(240,120,90,.55); animation:atkpulse 1.5s infinite;}
+@keyframes atkpulse{0%,100%{box-shadow:0 0 0 2px rgba(193,79,55,.45), 0 0 12px rgba(240,120,90,.4);}
+  50%{box-shadow:0 0 0 2px rgba(193,79,55,.75), 0 0 22px rgba(240,120,90,.8);}}
 .btn:disabled{opacity:.4; cursor:not-allowed;}
 input,textarea{background:#0d1c1f; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:9px 11px; font:inherit; outline:none; width:100%; user-select:text;}
 input:focus,textarea:focus{border-color:var(--gold);}
@@ -524,6 +563,19 @@ input:focus,textarea:focus{border-color:var(--gold);}
 .card-i:hover{box-shadow:0 0 0 2px var(--gold), 0 4px 14px rgba(0,0,0,.6); z-index:5;}
 .card-i.tapped{transform:rotate(90deg) scale(.86);}
 .card-i.cmdr{box-shadow:0 0 0 2px var(--gold), 0 2px 10px rgba(211,171,78,.4);}
+/* creature declaree attaquante : encadrement rouge tant qu'elle reste engagee */
+.card-i.atk{box-shadow:0 0 0 2px var(--red), 0 0 13px rgba(193,79,55,.85) !important;}
+.card-i.atk::after{content:"⚔"; position:absolute; top:1px; right:2px; font-size:11px;
+  text-shadow:0 0 3px #000, 0 0 6px #000; z-index:7; pointer-events:none;}
+/* nom de carte cliquable/survolable dans le journal */
+.lgc{color:var(--gold); border-bottom:1px dotted var(--gold2); cursor:help;}
+.lgc:hover{color:#fff; border-bottom-color:#fff;}
+/* carte revelee a toute la table */
+.reveal{position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:210; text-align:center;
+  background:#101f23; border:1px solid var(--gold); border-radius:14px; padding:12px 14px;
+  box-shadow:0 16px 44px rgba(0,0,0,.8); display:flex; flex-direction:column; gap:8px; align-items:center;}
+.reveal img{width:min(260px,60vw); border-radius:11px;}
+.reveal .rv-who{font-size:12px; color:var(--gold); letter-spacing:.08em; text-transform:uppercase;}
 .card-txt{position:absolute; inset:0; padding:5px 4px; font-size:9px; line-height:1.15; text-align:center;
   display:flex; flex-direction:column; gap:3px; align-items:center; justify-content:center; background:linear-gradient(160deg,#2b2536,#161320); color:#d9d2e8; word-break:break-word; overflow:hidden;}
 .ctpt{font-weight:800; color:var(--gold); background:rgba(0,0,0,.35); border:1px solid var(--gold2); border-radius:8px; padding:0 6px; line-height:1.5; flex:none;}
@@ -540,6 +592,9 @@ a.btn{text-decoration:none; display:inline-flex; align-items:center; gap:4px;}
   display:flex;align-items:center;justify-content:center; border:1px solid #453015 !important;}
 .badge{position:absolute; top:-6px; right:-6px; min-width:19px; height:19px; border-radius:10px; background:var(--gold);
   color:#1c1608; font-weight:800; font-size:11px; display:flex; align-items:center; justify-content:center; padding:0 5px; z-index:6; box-shadow:0 1px 4px #000;}
+/* badge des marqueurs +1/+1 (doré) et -1/-1 (rouge) : on écrit la valeur en clair */
+.badge.ptb{min-width:0; padding:0 6px; font-size:10.5px; white-space:nowrap;}
+.badge.neg{background:var(--red); color:#fff;}
 .bfree{position:relative; flex:none; margin:2px 8px; border-radius:14px; min-height:0; overflow:hidden;}
 .band{position:absolute; left:6px; right:6px; border:1px dashed rgba(211,171,78,.10); border-radius:12px; pointer-events:none;}
 .bfree:not(.mine) .band{border-color:rgba(148,174,171,.08);}
@@ -560,6 +615,13 @@ a.btn{text-decoration:none; display:inline-flex; align-items:center; gap:4px;}
   cursor:pointer; opacity:.55; transition:opacity .12s, border-color .12s; padding:0; display:flex; align-items:center; justify-content:center;}
 .card-w:hover .dfcbtn{opacity:1; border-color:var(--gold);}
 .dfcbtn:hover{color:#fff;}
+/* pastilles des marqueurs de base, dans le menu contextuel */
+.mchips{display:flex; flex-wrap:wrap; gap:4px; padding:3px 10px 6px;}
+.mchip{padding:2px 7px; border-radius:9px; font-size:10.5px; line-height:1.5; cursor:pointer;
+  background:rgba(255,255,255,.05); color:var(--ink); border:1px solid var(--line2); white-space:nowrap;}
+.mchip:hover{border-color:var(--gold); color:var(--gold);}
+/* la regle .menu button force display:block/width:100% : on la neutralise ici */
+.menu .mchip{display:inline-flex; width:auto; text-align:center; padding:2px 7px;}
 .att-target{outline:2px dashed var(--gold); outline-offset:3px; border-radius:8px; cursor:crosshair; animation:pulse 1.4s infinite;}
 .attbadge{min-width:23px; height:16px; padding:0 5px; border-radius:9px; font-size:10px; font-weight:800; line-height:15px;
   background:rgba(8,17,19,.92); color:var(--gold); border:1px solid var(--gold2); cursor:pointer; white-space:nowrap;
@@ -674,6 +736,16 @@ body.en .handzone.drop-over::after{content:"Return to hand" !important;}
 .menu button{display:block; width:100%; text-align:left; background:none; border:none; color:var(--ink); padding:6px 10px; border-radius:6px; cursor:pointer; font-size:12.5px;}
 .menu button:hover{background:var(--panel2); color:#fff;}
 .menu .sec{padding:5px 10px 2px; font-size:9px; letter-spacing:.14em; color:var(--dim); text-transform:uppercase; border-top:1px solid var(--line); margin-top:3px;}
+/* sections repliables du menu : une seule ouverte à la fois (accordéon) */
+.menu .mghead{display:flex !important; align-items:center; gap:6px; width:100%; padding:6px 10px; border-radius:6px;
+  font-size:12.5px; color:var(--ink); background:none; border:none; cursor:pointer;}
+.menu .mghead:hover{background:var(--panel2); color:#fff;}
+.menu .mghead.on{background:rgba(211,171,78,.12); color:var(--gold);}
+.mgl{flex:1; text-align:left; white-space:nowrap;}
+.mgb{flex:none; font-size:10px; font-weight:800; color:var(--gold);}
+.mgb.neg{color:var(--red);}
+.mgc{flex:none; font-size:9px; color:var(--dim);}
+.mgbody{border-left:2px solid var(--line2); margin:1px 0 4px 8px; padding-left:2px;}
 .modal-bg{position:fixed; inset:0; background:rgba(4,10,11,.78); z-index:90; display:flex; align-items:center; justify-content:center; padding:20px;}
 .modal{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px; max-width:860px; width:100%; max-height:88vh; max-height:88dvh; overflow:auto;}
 /* aperçu en grand : conteneur pleine hauteur, contenu centré et borné pour
@@ -743,7 +815,7 @@ function Card({ card, w = 76, mine = true, zone, onTap, onMenu, onHover, onTrans
       <div className="grplbl">groupe</div>
     </div>
   ) : (
-    <div className={"card-i" + (card.tapped ? " tapped" : "") + (card.isCmdr ? " cmdr" : "")}>
+    <div className={"card-i" + (card.tapped ? " tapped" : "") + (card.isCmdr ? " cmdr" : "") + (card.atk ? " atk" : "")}>
       {fimg(card) ? <img src={big ? (fimgN(card) || fimg(card)) : fimg(card)} alt={dn(card)} draggable={false} /> : (
         <div className="card-txt" style={{ fontSize: Math.max(7.5, Math.round(w / 7.5)) }}>
           <div>{dn(card)}</div>
@@ -773,7 +845,9 @@ function Card({ card, w = 76, mine = true, zone, onTap, onMenu, onHover, onTrans
           onClick={(e) => { e.stopPropagation(); onTransform(card.id); }}
           onDragStart={(e) => e.preventDefault()}>⟳</button>
       )}
-      {card.counters > 0 && !card.faceDown && <div className="badge">{card.counters}</div>}
+      {!!card.counters && !card.faceDown && (
+        <div className={"badge ptb" + (card.counters < 0 ? " neg" : "")} title={t("Marqueurs +1/+1")}>{ptLabel(card.counters)}</div>
+      )}
       {!card.faceDown && card.marks && Object.keys(card.marks).length > 0 && (
         <div className="marks">{Object.entries(card.marks).map(([k, v]) => <div key={k} className="mark"><span className="mkn">{k}</span>{v > 1 && <b className="mkv">×{v}</b>}</div>)}</div>
       )}
@@ -1008,13 +1082,38 @@ function Lobby({ onStart, uiLang, onLang }) {
 }
 
 /* ---------- plateau de jeu ---------- */
+/* Une ligne du journal. Si l'entrée porte une carte (l.c), on rend son nom
+   survolable pour afficher l'aperçu en grand, sans changer le texte du message. */
+function LogLine({ l, onHover }) {
+  const c = l.c;
+  let body = l.msg;
+  if (c && c.n && typeof l.msg === "string" && l.msg.includes(c.n)) {
+    const i = l.msg.indexOf(c.n);
+    body = (
+      <>
+        {l.msg.slice(0, i)}
+        <span className="lgc"
+          onMouseEnter={() => onHover && onHover({ name: c.n, img: c.img, imgN: c.imgN })}
+          onMouseLeave={() => onHover && onHover(null)}>{c.n}</span>
+        {l.msg.slice(i + c.n.length)}
+      </>
+    );
+  }
+  return <div><b>{l.who}</b> {body}</div>;
+}
+
 /* liste des marqueurs affichée sous l'aperçu en grand */
 function PreviewMarks({ card }) {
   const hasMarks = card.marks && Object.keys(card.marks).length > 0;
-  if (!hasMarks && !(card.counters > 0)) return null;
+  const n = card.counters || 0;
+  if (!hasMarks && !n) return null;
   return (
     <div className="pv-marks">
-      {card.counters > 0 && <div className="pv-mark"><b>{card.counters}</b> {card.counters > 1 ? t("marqueurs") : t("marqueur")}</div>}
+      {!!n && (
+        <div className="pv-mark" style={n < 0 ? { borderColor: "var(--red)" } : undefined}>
+          <b>{ptLabel(n)}</b> · {Math.abs(n)} {Math.abs(n) > 1 ? t("marqueurs") : t("marqueur")} {n > 0 ? "+1/+1" : "-1/-1"}
+        </div>
+      )}
       {hasMarks && Object.entries(card.marks).map(([k, v]) => <div key={k} className="pv-mark">{k} <b>×{v}</b></div>)}
     </div>
   );
@@ -1189,8 +1288,11 @@ function OppHand({ count }) {
 }
 
 /* ---------- piles compactes des rails ---------- */
-function MiniPile({ label, count, topCard, back, onClick, onHover, onDropCard, title }) {
+function MiniPile({ label, count, topCard, back, onClick, onHover, onDropCard, dragFrom, title }) {
   const [over, setOver] = useState(false);
+  /* La carte du dessus peut être saisie et déposée ailleurs (champ, main…) :
+     on émet la même charge utile que les autres cartes, { id, from }. */
+  const canDrag = !!dragFrom && !back && count > 0 && !!topCard;
   return (
     <div className="mpile" title={title || ""}
       onDragOver={onDropCard ? (e) => { e.preventDefault(); setOver(true); } : undefined}
@@ -1198,9 +1300,11 @@ function MiniPile({ label, count, topCard, back, onClick, onHover, onDropCard, t
       onDrop={onDropCard ? (e) => { e.preventDefault(); setOver(false); try { const d = JSON.parse(e.dataTransfer.getData("text/plain")); onDropCard(d.id, d.from); } catch (er) {} } : undefined}
     >
       <div className={"mp-c" + (over ? " drop-over" : "") + (back && count > 0 ? " card-back" : "")} onClick={onClick}
+        draggable={canDrag}
+        onDragStart={canDrag ? (e) => { e.stopPropagation(); e.dataTransfer.setData("text/plain", JSON.stringify({ id: topCard.id, from: dragFrom })); if (onHover) onHover(null); } : undefined}
         onMouseEnter={() => onHover && topCard && !back && onHover(topCard)}
         onMouseLeave={() => onHover && onHover(null)}>
-        {count > 0 && !back && topCard && (topCard.img ? <img src={topCard.img} alt="" /> : <div className="card-txt" style={{ fontSize: 7 }}>{dn(topCard)}</div>)}
+        {count > 0 && !back && topCard && (fimg(topCard) ? <img src={fimg(topCard)} alt="" draggable={false} /> : <div className="card-txt" style={{ fontSize: 7 }}>{dn(topCard)}</div>)}
         {count > 0 && back && <Pips size={3} />}
         {count === 0 && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--dim)", fontSize: 11 }}>—</div>}
       </div>
@@ -1246,7 +1350,10 @@ const HELP_FR = [
   "🫳 <b>Vol de cartes</b> : ⋮ (ou clic droit) sur une carte adverse → « Prendre le contrôle ». Cliquez la bibliothèque adverse pour y prendre une carte quand un effet le demande, idem cimetière/exil. « Rendre au propriétaire » depuis le menu de la carte volée.",
   "🔗 <b>Équiper / enchanter</b> : glissez une carte <i>directement sur</i> une autre — elles s'empilent. Ou bien ⋮ → « Attacher à… » puis cliquez la cible. ⋮ → « Détacher » pour séparer.",
   "📚 <b>Clic sur votre bibliothèque</b> (rail gauche) ou sur « Piocher » : piocher. « Regarder X » et « Chercher » pour fouiller. « Meuler X » envoie le dessus de la bibliothèque au cimetière.",
-  "🏷 <b>Marqueurs nommés</b> : ⋮ sur une carte en jeu → « Marqueur nommé… » — appelez-le comme vous voulez (poison, provoc, indestructible…), puis +/− depuis le même menu.",
+  "🏷 <b>Marqueurs</b> : ⋮ sur une carte en jeu → boutons <b>+1</b> / <b>−1</b> pour les marqueurs <b>+1/+1</b> et <b>-1/-1</b> (ils s'annulent). Les marqueurs courants (poison, loyauté, charge…) s'ajoutent en un clic ; « Marqueur nommé… » pour tout le reste.",
+  "⚔ <b>Mode attaque</b> : bouton ⚔ (rail droit). Cliquez vos créatures pour les déclarer attaquantes : elles s'engagent et gardent un <b>cadre rouge</b> jusqu'à ce que vous les dégagiez.",
+  "👁 <b>Révéler</b> : ⋮ sur une carte de votre main → « Révéler à tous » — la carte s'affiche en grand chez tous les joueurs.",
+  "🪦 <b>Cimetière / Exil</b> : la carte du dessus se <b>glisse</b> directement vers le champ, la main… Survolez un nom de carte dans le journal pour la revoir.",
   "⛓ <b>Groupes</b> : « Créer un groupe » (rail droit) pose une carte-groupe colorée. ⋮ dessus → « Lier des cartes », puis cliquez les cartes concernées. Tout marqueur mis sur le groupe s'applique aussi à toutes ses cartes liées (pastille de couleur en haut des cartes).",
   "👁 <b>Survolez</b> n'importe quelle carte pour la lire en grand sur le côté gauche.",
   "🎲 Les dés, la pièce et chaque action sont inscrits dans le journal (rail droit), visible par les deux joueurs.",
@@ -1260,7 +1367,10 @@ const HELP_EN = [
   "🫳 <b>Stealing cards</b>: ⋮ (or right-click) on an opponent's card → “Take control”. Click the opponent's library to take a card when an effect asks for it, same for graveyard/exile. “Return to owner” from the stolen card's menu.",
   "🔗 <b>Equip / enchant</b>: drag a card <i>directly onto</i> another — they stack. Or ⋮ → “Attach to…” then click the target. ⋮ → “Detach” to separate.",
   "📚 <b>Click your library</b> (left rail) or “Draw” to draw. “Look at X” and “Search” to dig. “Mill X” sends the top of your library to the graveyard.",
-  "🏷 <b>Named counters</b>: ⋮ on a battlefield card → “Named counter…” — call it whatever you like (poison, stun, shield…), then +/− from the same menu.",
+  "🏷 <b>Counters</b>: ⋮ on a battlefield card → <b>+1</b> / <b>−1</b> buttons for <b>+1/+1</b> and <b>-1/-1</b> counters (they cancel out). Common counters (poison, loyalty, charge…) are one click away; “Named counter…” for anything else.",
+  "⚔ <b>Attack mode</b>: ⚔ button (right rail). Click your creatures to declare them attackers: they tap and keep a <b>red outline</b> until you untap them.",
+  "👁 <b>Reveal</b>: ⋮ on a card in your hand → “Reveal to everyone” — the card is shown large to every player.",
+  "🪦 <b>Graveyard / Exile</b>: the top card can be <b>dragged</b> straight to the battlefield, your hand… Hover a card name in the log to see it again.",
   "⛓ <b>Groups</b>: “Create a group” (right rail) drops a colored group card. ⋮ on it → “Link cards”, then click the cards. Any counter put on the group also applies to all its linked cards (colored dot on top of the cards).",
   "👁 <b>Hover</b> any card to read it full-size on the left side.",
   "🎲 Dice, coin flips and every action are written to the log (right rail), visible to all players.",
@@ -1286,6 +1396,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
   const [attachMode, setAttachMode] = useState(null); // id de la carte à attacher
   const [linkMode, setLinkMode] = useState(null); // id du groupe en cours de liaison
   const [snap, setSnap] = useState(true); // aimant d'alignement du placement libre
+  const [atkMode, setAtkMode] = useState(false); // mode attaque : engager = déclarer attaquant
   const [copied, setCopied] = useState(false);
   const [oppLibMenu, setOppLibMenu] = useState(null); // { x, y } — actions sur la biblio adverse
   const copyCode = async () => {
@@ -1465,7 +1576,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
   }, [code]);
 
   useEffect(() => {
-    const onKey = (e) => { if (e.key === "Escape") { setAttachMode(null); setLinkMode(null); setMenu(null); setOppLibMenu(null); } };
+    const onKey = (e) => { if (e.key === "Escape") { setAttachMode(null); setLinkMode(null); setAtkMode(false); setMenu(null); setOppLibMenu(null); } };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
@@ -1476,6 +1587,19 @@ function Game({ room, onQuit, uiLang, onLang }) {
     for (const sx of Object.keys(opps)) all.push(...(opps[sx].log || []));
     return all.sort((a, b) => b.t - a.t).slice(0, 40);
   }, [my, opps]);
+
+  /* Cartes révélées, à moi et aux adversaires. Une petite horloge fait expirer
+     l'affichage sans dépendre d'un message réseau supplémentaire. */
+  const [tick, setTick] = useState(0);
+  const [hidRev, setHidRev] = useState(0); // « until » de la révélation masquée localement
+  useEffect(() => { const id = setInterval(() => setTick((v) => v + 1), 1000); return () => clearInterval(id); }, []);
+  const reveals = useMemo(() => {
+    const now = Date.now(); const out = [];
+    const add = (st, who) => { const r = st && st.reveal; if (r && r.until > now && r.until !== hidRev) out.push({ ...r, who }); };
+    add(my, pname);
+    for (const sx of Object.keys(opps)) add(opps[sx], (opps[sx] && opps[sx].name) || sx);
+    return out.sort((a, b) => b.until - a.until);
+  }, [my, opps, tick, hidRev, pname]);
 
   /* battement de cœur du vocal : présence, (re)connexions, signalisation */
   useEffect(() => {
@@ -1541,8 +1665,12 @@ function Game({ room, onQuit, uiLang, onLang }) {
 
   if (!my) return <div style={{ margin: "auto" }} className="wait disp">{t("Préparation de la table…")}</div>;
 
-  const withLog = (s, msg) => msg ? { ...s, log: [...(s.log || []).slice(-30), { t: Date.now(), who: pname, msg }] } : s;
-  const addLog = (msg) => setMy((s) => withLog(s, msg));
+  /* `card` (optionnel) attache au journal de quoi afficher un aperçu au survol
+     du nom : { n: libellé exact présent dans le message, img, imgN }. */
+  const lc = (card, label) => (card && !card.faceDown && fimg(card))
+    ? { n: label || dn(card), img: fimg(card), imgN: fimgN(card) } : null;
+  const withLog = (s, msg, card) => msg ? { ...s, log: [...(s.log || []).slice(-30), { t: Date.now(), who: pname, msg, c: card || undefined }] } : s;
+  const addLog = (msg, card) => setMy((s) => withLog(s, msg, card));
 
   const move = (id, from, to, opt = {}) => {
     if (from === to && to !== "library") return;
@@ -1551,7 +1679,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
       const i = src.findIndex((c) => c.id === id); if (i < 0) return s;
       const [c0] = src.splice(i, 1); const card = { ...c0 };
       const shown = card.faceDown && from !== "hand" ? t("une carte face cachée") : dn(card);
-      if (to !== "battlefield") { card.tapped = false; card.faceDown = false; card.flipped = false; card.counters = 0; card.marks = null; card.groups = null; card.bx = null; card.by = null; }
+      if (to !== "battlefield") { card.tapped = false; card.atk = false; card.atkWasTapped = undefined; card.faceDown = false; card.flipped = false; card.counters = 0; card.marks = null; card.groups = null; card.bx = null; card.by = null; }
       card.host = null;
       if (to === "battlefield") {
         card.row = opt.row || card.row || card.t || "other";
@@ -1572,7 +1700,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
           const groups = { ...c.groups }; delete groups[id];
           return { ...c, groups };
         });
-      if (card.token && to !== "battlefield") return withLog({ ...s, zones }, `${t("supprime le jeton")} ${dn(card)}`);
+      if (card.token && to !== "battlefield") return withLog({ ...s, zones }, `${t("supprime le jeton")} ${dn(card)}`, lc(card));
       const dst = [...zones[to]];
       if (to === "library") { opt.bottom ? dst.push(card) : dst.unshift(card); }
       else dst.push(card);
@@ -1586,7 +1714,10 @@ function Game({ room, onQuit, uiLang, onLang }) {
       else if (to === "hand") msg = from === "library" ? t("pioche une carte") : `${t("reprend")} ${shown} ${t("en main")}`;
       else if (to === "library") msg = `${t("remet une carte")} ${opt.bottom ? t("sous la bibliothèque") : t("sur la bibliothèque")}`;
       else if (to === "battlefield") msg = `${t("met")} ${shown} ${t("sur le champ de bataille")}`;
-      return withLog({ ...s, zones }, msg);
+      /* on n'attache l'aperçu que si le nom apparaît réellement dans le message
+         (donc pas pour « une carte face cachée », ni pour une pioche anonyme) */
+      const meta = msg && msg.includes(shown) ? lc(card, shown) : null;
+      return withLog({ ...s, zones }, msg, meta);
     });
   };
 
@@ -1688,7 +1819,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
       n === 1 ? t("pioche une carte") : `${t("pioche")} ${take.length} ${t("cartes")}`);
   });
   const doShuffle = () => setMy((s) => withLog({ ...s, zones: { ...s.zones, library: shuffleArr(s.zones.library) } }, t("mélange sa bibliothèque")));
-  const untapAll = () => setMy((s) => withLog({ ...s, zones: { ...s.zones, battlefield: s.zones.battlefield.map((c) => ({ ...c, tapped: false })) } }, t("dégage tout")));
+  const untapAll = () => setMy((s) => withLog({ ...s, zones: { ...s.zones, battlefield: s.zones.battlefield.map((c) => ({ ...c, tapped: false, atk: false, atkWasTapped: undefined })) } }, t("dégage tout")));
   const mulligan = (n = 7) => setMy((s) => {
     const lib = shuffleArr([...s.zones.library, ...s.zones.hand.map((c) => ({ ...c, faceDown: false, tapped: false }))]);
     const hand = lib.splice(0, Math.max(0, Math.min(n, lib.length)));
@@ -1728,20 +1859,46 @@ function Game({ room, onQuit, uiLang, onLang }) {
     else if (a.type === "mark" && v) bumpMark(a.cardId, v, 1);
     else if (a.type === "group" && v) spawnGroup(v);
   };
-  const tapToggle = (card) => setMy((s) => withLog({ ...s, zones: { ...s.zones, battlefield: s.zones.battlefield.map((c) => c.id === card.id ? { ...c, tapped: !c.tapped } : c) } },
-    `${card.tapped ? t("dégage") : t("engage")} ${card.faceDown ? t("une carte") : dn(card)}`));
+  /* Dégager une carte annule sa déclaration d'attaque (l'encadrement rouge). */
+  const tapToggle = (card) => setMy((s) => withLog({ ...s, zones: { ...s.zones, battlefield: s.zones.battlefield.map((c) => c.id === card.id ? { ...c, tapped: !c.tapped, atk: c.tapped ? false : c.atk, atkWasTapped: c.tapped ? undefined : c.atkWasTapped } : c) } },
+    `${card.tapped ? t("dégage") : t("engage")} ${card.faceDown ? t("une carte") : dn(card)}`, card.faceDown ? null : lc(card)));
+  /* Mode attaque : engager une créature la déclare attaquante (cadre rouge) et
+     elle le reste jusqu'à ce qu'on la dégage. Recliquer annule la déclaration et
+     rend son état d'engagement d'avant (on ne dégage que si c'est nous qui
+     l'avions engagée en la déclarant). */
+  const declareAttack = (card) => setMy((s) => {
+    const cur = s.zones.battlefield.find((c) => c.id === card.id); if (!cur) return s;
+    const on = !cur.atk;
+    const bf = s.zones.battlefield.map((c) => {
+      if (c.id !== card.id) return c;
+      if (on) return { ...c, atk: true, atkWasTapped: !!c.tapped, tapped: true };
+      return { ...c, atk: false, tapped: !!c.atkWasTapped, atkWasTapped: undefined };
+    });
+    return withLog({ ...s, zones: { ...s.zones, battlefield: bf } },
+      on ? `${t("attaque avec")} ${dn(cur)} ⚔` : `${t("retire de l'attaque")} ${dn(cur)}`,
+      cur.faceDown ? null : lc(cur));
+  });
   const onBFTap = (card) => {
     if (linkMode) { if (card.id === linkMode) setLinkMode(null); else toggleLink(linkMode, card); return; }
     if (attachMode) { if (card.id !== attachMode) doAttach(card, { id: attachMode, from: "battlefield" }); setAttachMode(null); return; }
+    if (atkMode && !card.grp) { declareAttack(card); return; }
     tapToggle(card);
   };
+  /* `counters` est signé : +N = N marqueurs +1/+1, -N = N marqueurs -1/-1.
+     Ajouter l'un annule donc l'autre, comme la règle 704.5q. Pas de clamp à 0. */
   const bump = (id, d) => setMy((s) => {
     const target = s.zones.battlefield.find((c) => c.id === id); if (!target) return s;
     const ids = new Set([id]);
     if (target.grp) for (const c of s.zones.battlefield) if (c.groups && c.groups[id]) ids.add(c.id);
-    return { ...s, zones: { ...s.zones, battlefield: s.zones.battlefield.map((c) => ids.has(c.id) ? { ...c, counters: Math.max(0, c.counters + d) } : c) } };
+    return { ...s, zones: { ...s.zones, battlefield: s.zones.battlefield.map((c) => ids.has(c.id) ? { ...c, counters: (c.counters || 0) + d } : c) } };
   });
   const flip = (id) => setMy((s) => ({ ...s, zones: { ...s.zones, battlefield: s.zones.battlefield.map((c) => c.id === id ? { ...c, faceDown: !c.faceDown } : c) } }));
+  /* Révéler une carte de sa main à toute la table : l'info est stockée dans mon
+     état (donc synchronisée) et s'efface d'elle-même au bout de quelques secondes. */
+  const REVEAL_MS = 10000;
+  const revealCard = (card) => setMy((s) => withLog(
+    { ...s, reveal: { n: dn(card), img: fimg(card), imgN: fimgN(card), until: Date.now() + REVEAL_MS } },
+    `${t("révèle")} ${dn(card)} 👁`, lc(card)));
   /* Transformer une carte recto-verso : on bascule la face visible. Le type de la
      face affichée (ft/bt) devient le type courant, pour rester cohérent si on
      range la carte par rangée. La position et les marqueurs sont préservés. */
@@ -1753,9 +1910,9 @@ function Game({ room, onQuit, uiLang, onLang }) {
     const bf = { ...card, flipped, t: nt };
     const shown = flipped ? (card.bfn || card.bname || card.name) : (card.fn || card.name);
     return withLog({ ...s, zones: { ...s.zones, battlefield: s.zones.battlefield.map((c) => c.id === id ? bf : c) } },
-      `${t("transforme")} ${dn(card)} → ${shown}`);
+      `${t("transforme")} ${dn(card)} → ${shown}`, lc(card));
   });
-  const clone = (card) => setMy((s) => withLog({ ...s, zones: { ...s.zones, battlefield: [...s.zones.battlefield, { ...card, id: uid(), token: true, tapped: false, host: null }] } }, `${t("crée une copie-jeton de")} ${dn(card)}`));
+  const clone = (card) => setMy((s) => withLog({ ...s, zones: { ...s.zones, battlefield: [...s.zones.battlefield, { ...card, id: uid(), token: true, tapped: false, atk: false, atkWasTapped: undefined, host: null }] } }, `${t("crée une copie-jeton de")} ${dn(card)}`, lc(card)));
 
   const applyArt = (card, p, all) => {
     const key = card.name.toLowerCase();
@@ -1784,7 +1941,8 @@ function Game({ room, onQuit, uiLang, onLang }) {
     }
   };
 
-  const spawnToken = (tk) => setMy((s) => withLog({ ...s, zones: { ...s.zones, battlefield: [...s.zones.battlefield, { id: uid(), name: tk.name, fn: tk.fn || null, img: tk.s || null, imgN: tk.n || null, pt: tk.pt || null, t: tk.t || "creature", row: tk.t || "creature", host: null, tapped: false, faceDown: false, counters: 0, token: true }] } }, `${t("crée un jeton")} ${tk.fn || tk.name}${tk.pt ? " " + tk.pt : ""}`));
+  const spawnToken = (tk) => setMy((s) => withLog({ ...s, zones: { ...s.zones, battlefield: [...s.zones.battlefield, { id: uid(), name: tk.name, fn: tk.fn || null, img: tk.s || null, imgN: tk.n || null, pt: tk.pt || null, t: tk.t || "creature", row: tk.t || "creature", host: null, tapped: false, faceDown: false, counters: 0, token: true }] } }, `${t("crée un jeton")} ${tk.fn || tk.name}${tk.pt ? " " + tk.pt : ""}`,
+    tk.s ? { n: tk.fn || tk.name, img: tk.s, imgN: tk.n || tk.s } : null));
 
   const spawnGroup = (name) => setMy((s) => {
     const used = s.zones.battlefield.filter((c) => c.grp).length;
@@ -1914,6 +2072,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
 
   const myTurn = meta && meta.turn === seat;
   const z = my.zones;
+  const atkCount = z.battlefield.filter((c) => c.atk).length; // créatures déclarées attaquantes
   const order = (meta && meta.order) || ["P1", "P2"];
   const oppSeats = order.filter((sx) => sx !== seat);
   const curOppSeat = oppSeats.length ? oppSeats[((oppIdx % oppSeats.length) + oppSeats.length) % oppSeats.length] : null;
@@ -1989,6 +2148,14 @@ function Game({ room, onQuit, uiLang, onLang }) {
         </div>
       )}
 
+      {atkMode && !attachMode && !linkMode && (
+        <div className="banner" style={{ borderColor: "var(--red)", color: "#f0b7a8", background: "#2a1410" }}>
+          ⚔ {t("Mode attaque : cliquez une créature pour la déclarer attaquante")}
+          {atkCount > 0 && <b style={{ color: "#fff" }}>{atkCount} {t("en attaque")}</b>}
+          <button className="btn ghost" onClick={() => setAtkMode(false)}>{t("Quitter (Échap)")}</button>
+        </div>
+      )}
+
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
         {/* ===== rail gauche : joueurs & piles ===== */}
         <div className="rail left">
@@ -2018,10 +2185,12 @@ function Game({ room, onQuit, uiLang, onLang }) {
           <div className="mpiles" style={{ marginBottom: 10 }}>
             <MiniPile label={t("Biblio")} back count={z.library.length} onClick={() => draw(1)}
               onDropCard={(id, from) => move(id, from, "library")} title={t("Clic : piocher · Déposez une carte : dessus de la bibliothèque")} />
-            <MiniPile label={t("Cim.")} count={z.graveyard.length} topCard={z.graveyard[z.graveyard.length - 1]}
-              onClick={() => setViewer({ who: "me", zone: "graveyard" })} onDropCard={(id, from) => move(id, from, "graveyard")} onHover={setHover} />
-            <MiniPile label={t("Exil")} count={z.exile.length} topCard={z.exile[z.exile.length - 1]}
-              onClick={() => setViewer({ who: "me", zone: "exile" })} onDropCard={(id, from) => move(id, from, "exile")} onHover={setHover} />
+            <MiniPile label={t("Cim.")} count={z.graveyard.length} topCard={z.graveyard[z.graveyard.length - 1]} dragFrom="graveyard"
+              onClick={() => setViewer({ who: "me", zone: "graveyard" })} onDropCard={(id, from) => move(id, from, "graveyard")} onHover={setHover}
+              title={t("Clic : fouiller · Glissez la carte du dessus pour la déplacer")} />
+            <MiniPile label={t("Exil")} count={z.exile.length} topCard={z.exile[z.exile.length - 1]} dragFrom="exile"
+              onClick={() => setViewer({ who: "me", zone: "exile" })} onDropCard={(id, from) => move(id, from, "exile")} onHover={setHover}
+              title={t("Clic : fouiller · Glissez la carte du dessus pour la déplacer")} />
           </div>
           <div style={{ display: "flex", gap: 8, justifyContent: "center", marginBottom: 10, flexWrap: "wrap" }}>
             {z.command.map((c) => (
@@ -2073,6 +2242,12 @@ function Game({ room, onQuit, uiLang, onLang }) {
         {/* ===== rail droit : actions, tour, journal ===== */}
         <div className="rail right">
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            <button className={"btn atkbtn" + (atkMode ? " on" : "")} style={{ gridColumn: "1 / -1" }}
+              title={t("Mode attaque : cliquez vos créatures pour les déclarer attaquantes")}
+              onClick={() => setAtkMode((v) => !v)}>
+              ⚔ {atkMode ? t("Attaque en cours") : t("Attaquer")}
+              {atkCount > 0 && <b style={{ marginLeft: 6 }}>· {atkCount}</b>}
+            </button>
             <button className="btn gold" onClick={() => draw(1)}>{t("Piocher")}</button>
             <button className="btn" onClick={untapAll}>{t("Dégager tout")}</button>
             <button className="btn" onClick={doShuffle}>{t("Mélanger")}</button>
@@ -2096,7 +2271,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
 
           <div className="disp" style={{ fontSize: 9.5, color: "var(--dim)", margin: "2px 2px 6px" }}>{t("Journal")}</div>
           <div className="log" style={{ flex: 1 }}>
-            {mergedLog.map((l, i) => <div key={l.t + "-" + i}><b>{l.who}</b> {l.msg}</div>)}
+            {mergedLog.map((l, i) => <LogLine key={l.t + "-" + i} l={l} onHover={setHover} />)}
           </div>
         </div>
       </div>
@@ -2141,7 +2316,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
         const live = src.find((c) => c.id === menu.card.id) || menu.card;
         const groupNames = {};
         for (const g of z.battlefield) if (g.grp) groupNames[g.id] = dn(g);
-        return <CardMenu menu={{ ...menu, card: live }} close={closeMenu} move={move} bump={bump} flip={flip} transform={transform} clone={clone} tap={tapToggle}
+        return <CardMenu menu={{ ...menu, card: live }} close={closeMenu} move={move} bump={bump} flip={flip} transform={transform} reveal={revealCard} clone={clone} tap={tapToggle}
           setRow={setRow} attach={(id) => setAttachMode(id)} detach={detach} pickArt={(c) => setArtPick(c)}
           remove={removeCard} bumpMark={bumpMark} groupNames={groupNames} steal={stealFromOpp} giveBack={returnToOwner}
           link={(id) => setLinkMode(id)} unlink={toggleLink}
@@ -2173,6 +2348,18 @@ function Game({ room, onQuit, uiLang, onLang }) {
       {viewer && <ZoneViewer viewer={viewer} my={my} opp={opp} move={move} doShuffle={doShuffle} close={() => setViewer(null)} onHover={setHover} steal={stealFromOpp} />}
       {topN && <TopViewer n={topN} my={my} move={move} close={() => setTopN(null)} onHover={setHover} />}
 
+      {/* ===== carte révélée à toute la table ===== */}
+      {reveals.length > 0 && (
+        <div className="reveal" onClick={() => setHidRev(reveals[0].until)}>
+          <div className="rv-who">👁 {reveals[0].who} {t("révèle")}</div>
+          {reveals[0].img
+            ? <img src={reveals[0].imgN || reveals[0].img} alt={reveals[0].n} />
+            : <div style={{ padding: 22, fontSize: 16 }}>{reveals[0].n}</div>}
+          <div style={{ fontSize: 13 }}>{reveals[0].n}</div>
+          <button className="btn ghost" onClick={(e) => { e.stopPropagation(); setHidRev(reveals[0].until); }}>{t("Fermer ✕")}</button>
+        </div>
+      )}
+
       {/* ===== aperçu ===== */}
       {hover && !hover.faceDown && fimg(hover) && (
         <div className="preview"><img src={fimgN(hover) || fimg(hover)} alt="" /><PreviewMarks card={hover} /></div>
@@ -2187,20 +2374,36 @@ function Game({ room, onQuit, uiLang, onLang }) {
   );
 }
 
-function CardMenu({ menu, close, move, bump, flip, transform, clone, tap, setRow, attach, detach, pickArt, remove, bumpMark, nameMark, link, unlink, groupNames = {}, steal, giveBack }) {
+/* Dernière section ouverte du menu : mémorisée d'un clic droit à l'autre, pour
+   ne pas avoir à la rouvrir sans arrêt pendant une même phase de jeu. */
+let MENU_LAST_OPEN = null;
+
+function CardMenu({ menu, close, move, bump, flip, transform, reveal, clone, tap, setRow, attach, detach, pickArt, remove, bumpMark, nameMark, link, unlink, groupNames = {}, steal, giveBack }) {
   const { card, zone, x, y } = menu;
   const ref = useRef(null);
   const [pos, setPos] = useState({ left: x, top: y, ready: false });
+  const [open, setOpen] = useState(MENU_LAST_OPEN);
+  const toggle = (k) => setOpen((o) => { const nv = o === k ? null : k; MENU_LAST_OPEN = nv; return nv; });
   useLayoutEffect(() => {
     const el = ref.current; if (!el) return;
     const r = el.getBoundingClientRect();
     const left = Math.max(6, Math.min(x, window.innerWidth - r.width - 6));
     const top = Math.max(6, Math.min(y, window.innerHeight - r.height - 6));
     setPos({ left, top, ready: true });
-  }, [x, y, card.id, zone, Object.keys(card.marks || {}).length]);
+  }, [x, y, card.id, zone, open, Object.keys(card.marks || {}).length]);
   const it = (label, fn) => <button onClick={(e) => { e.stopPropagation(); fn(); close(); }}>{label}</button>;
-  const itKeep = (label, fn) => <button onClick={(e) => { e.stopPropagation(); fn(); }}>{label}</button>;
   const sec = (label) => <div className="sec">{label}</div>;
+  /* Une section repliable. `badge` résume le contenu quand elle est fermée. */
+  const grp = (key, label, badge, children, badgeNeg) => (
+    <div key={key}>
+      <button className={"mghead" + (open === key ? " on" : "")} onClick={(e) => { e.stopPropagation(); toggle(key); }}>
+        <span className="mgl">{label}</span>
+        {badge ? <span className={"mgb" + (badgeNeg ? " neg" : "")}>{badge}</span> : null}
+        <span className="mgc">{open === key ? "▾" : "▸"}</span>
+      </button>
+      {open === key && <div className="mgbody">{children}</div>}
+    </div>
+  );
   const markRows = (
     <>
       {card.marks && Object.entries(card.marks).map(([k, v]) => (
@@ -2214,6 +2417,67 @@ function CardMenu({ menu, close, move, bump, flip, transform, clone, tap, setRow
       ))}
     </>
   );
+  /* Ligne des marqueurs +1/+1 : la valeur courante est affichée en clair, et les
+     deux boutons ajoutent un +1/+1 ou un -1/-1 (qui s'annulent entre eux). */
+  const n = card.counters || 0;
+  const ptRow = (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px 10px" }}>
+      <span style={{ flex: 1, fontSize: 12, whiteSpace: "nowrap" }}>
+        {n ? <b style={{ color: n < 0 ? "var(--red)" : "var(--gold)" }}>{ptLabel(n)}</b>
+           : <span style={{ color: "var(--dim)" }}>{t("Aucun marqueur +1/+1")}</span>}
+      </span>
+      <button className="lbtn" style={{ width: 30, height: 20, fontSize: 10 }} title={t("Ajouter un marqueur -1/-1")}
+        onClick={(e) => { e.stopPropagation(); bump(card.id, -1); }}>−1</button>
+      <button className="lbtn" style={{ width: 30, height: 20, fontSize: 10 }} title={t("Ajouter un marqueur +1/+1")}
+        onClick={(e) => { e.stopPropagation(); bump(card.id, 1); }}>+1</button>
+    </div>
+  );
+  /* Marqueurs nommés courants, ajoutables en un clic (plus besoin de les saisir). */
+  const presetChips = (
+    <div className="mchips">
+      {PRESET_MARKS.map((m) => (
+        <button key={m} className="mchip" title={`${t("Ajouter un marqueur")} ${t(m)}`}
+          onClick={(e) => { e.stopPropagation(); bumpMark(card.id, t(m), 1); }}>+ {t(m)}</button>
+      ))}
+    </div>
+  );
+
+  /* ---- contenus des sections repliables ---- */
+  const markCount = card.marks ? Object.values(card.marks).reduce((a, b) => a + b, 0) : 0;
+  // résumé affiché quand la section « Marqueurs » est fermée
+  const marksBadge = n ? ptLabel(n) : (markCount ? `${markCount} 🏷` : null);
+  const marksBody = <>{ptRow}{markRows}{presetChips}{it(t("🏷 Marqueur nommé…"), () => nameMark(card))}</>;
+
+  const ROWLBL = { land: t("🏔 Terrains"), creature: t("🐉 Créatures"), other: t("✨ Autres") };
+  const rowBody = <>
+    {it(ROWLBL.land, () => setRow(card.id, "land"))}
+    {it(ROWLBL.creature, () => setRow(card.id, "creature"))}
+    {it(ROWLBL.other, () => setRow(card.id, "other"))}
+  </>;
+
+  const sendBody = <>
+    {zone !== "hand" && it(t("✋ Main"), () => move(card.id, zone, "hand"))}
+    {zone !== "graveyard" && it(t("🪦 Cimetière"), () => move(card.id, zone, "graveyard"))}
+    {zone !== "exile" && it(t("🚫 Exil"), () => move(card.id, zone, "exile"))}
+    {card.isCmdr && zone !== "command" && it(t("⭐ Zone de commandement"), () => move(card.id, zone, "command"))}
+    {it(t("📚 Dessus de la bibliothèque"), () => move(card.id, zone, "library"))}
+    {it(t("📚 Dessous de la bibliothèque"), () => move(card.id, zone, "library", { bottom: true }))}
+  </>;
+
+  /* « Carte & état » : les actions plus rares, regroupées pour désencombrer. */
+  const cardBody = <>
+    {it(card.faceDown ? t("👁 Face visible") : t("🙈 Face cachée"), () => flip(card.id))}
+    {it(t("🪙 Copie-jeton"), () => clone(card))}
+    {!card.faceDown && it(t("🎨 Changer l'illustration…"), () => pickArt(card))}
+    {card.groups && Object.keys(card.groups).map((gid) => (
+      <button key={gid} onClick={(e) => { e.stopPropagation(); unlink(gid, card); close(); }}>
+        <span className="grpdot" style={{ background: card.groups[gid], display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />
+        ✂ {t("Délier de")} « {groupNames[gid] || t("groupe")} »
+      </button>
+    ))}
+    {card.ownerSeat && it(t("↩ Rendre au propriétaire"), () => giveBack(card))}
+    {card.token && it(t("🗑 Supprimer le jeton"), () => remove(card, zone))}
+  </>;
   if (menu.opp) return (
     <div className="menu" ref={ref} style={{ left: pos.left, top: pos.top, visibility: pos.ready ? "visible" : "hidden" }} onClick={(e) => e.stopPropagation()}>
       <div style={{ padding: "5px 10px", fontSize: 11.5, color: "var(--dim)", borderBottom: "1px solid var(--line)", marginBottom: 4, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -2227,15 +2491,8 @@ function CardMenu({ menu, close, move, bump, flip, transform, clone, tap, setRow
     <div className="menu" ref={ref} style={{ left: pos.left, top: pos.top, visibility: pos.ready ? "visible" : "hidden" }} onClick={(e) => e.stopPropagation()}>
       <div style={{ padding: "5px 10px", fontSize: 11.5, color: card.color || "var(--gold)", borderBottom: "1px solid var(--line)", marginBottom: 4, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>⛓ {t("Groupe")} · {dn(card)}</div>
       {it(t("⛓ Lier / délier des cartes (cliquez-les)"), () => link(card.id))}
-      {sec(t("Marqueurs du groupe (appliqués aux cartes liées)"))}
-      {itKeep(t("➕ Ajouter un marqueur"), () => bump(card.id, 1))}
-      {itKeep(t("➖ Retirer un marqueur"), () => bump(card.id, -1))}
-      {it(t("🏷 Marqueur nommé…"), () => nameMark(card))}
-      {markRows}
-      {sec(t("Déplacer vers la rangée"))}
-      {it(t("🏔 Terrains"), () => setRow(card.id, "land"))}
-      {it(t("🐉 Créatures"), () => setRow(card.id, "creature"))}
-      {it(t("✨ Autres"), () => setRow(card.id, "other"))}
+      {grp("marks", t("🎯 Marqueurs du groupe"), marksBadge, marksBody, n < 0)}
+      {grp("row", t("📐 Rangée"), ROWLBL[card.row] || null, rowBody)}
       {sec("")}
       {it(t("🗑 Supprimer le groupe (délie tout)"), () => remove(card, zone))}
     </div>
@@ -2243,44 +2500,30 @@ function CardMenu({ menu, close, move, bump, flip, transform, clone, tap, setRow
   return (
     <div className="menu" ref={ref} style={{ left: pos.left, top: pos.top, visibility: pos.ready ? "visible" : "hidden" }} onClick={(e) => e.stopPropagation()}>
       <div style={{ padding: "5px 10px", fontSize: 11.5, color: "var(--gold)", borderBottom: "1px solid var(--line)", marginBottom: 4, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{card.faceDown ? t("Carte face cachée") : dn(card)}</div>
+
+      {/* actions fréquentes : toujours visibles, sans repli */}
       {zone === "hand" && <>
         {it(t("▶ Jouer"), () => move(card.id, "hand", "battlefield"))}
         {it(t("🙈 Jouer face cachée"), () => move(card.id, "hand", "battlefield", { faceDown: true }))}
+        {reveal && it(t("👁 Révéler à tous"), () => reveal(card))}
         {it(t("🗑 Se défausser"), () => move(card.id, "hand", "graveyard"))}
       </>}
       {zone === "command" && it(t("⭐ Lancer le commandant"), () => move(card.id, "command", "battlefield"))}
       {zone === "battlefield" && <>
         {it(card.tapped ? t("↺ Dégager") : t("⤵ Engager"), () => tap(card))}
-        {card.host ? it(t("✂ Détacher"), () => detach(card.id)) : it(t("🔗 Attacher à… (cliquez la cible)"), () => attach(card.id))}
-        {sec(t("Marqueurs & état"))}
-        {itKeep(t("➕ Ajouter un marqueur"), () => bump(card.id, 1))}
-        {itKeep(t("➖ Retirer un marqueur"), () => bump(card.id, -1))}
-        {it(t("🏷 Marqueur nommé…"), () => nameMark(card))}
-        {markRows}
-        {card.groups && Object.keys(card.groups).map((gid) => (
-          <button key={gid} onClick={(e) => { e.stopPropagation(); unlink(gid, card); }}>
-            <span className="grpdot" style={{ background: card.groups[gid], display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />
-            ✂ {t("Délier de")} « {groupNames[gid] || t("groupe")} »
-          </button>
-        ))}
         {card.dfc && transform && !card.faceDown && it(t("⟳ Transformer"), () => transform(card.id))}
-        {it(card.faceDown ? t("👁 Face visible") : t("🙈 Face cachée"), () => flip(card.id))}
-        {it(t("🪙 Copie-jeton"), () => clone(card))}
-        {sec(t("Déplacer vers la rangée"))}
-        {it(t("🏔 Terrains"), () => setRow(card.id, "land"))}
-        {it(t("🐉 Créatures"), () => setRow(card.id, "creature"))}
-        {it(t("✨ Autres"), () => setRow(card.id, "other"))}
+        {card.host ? it(t("✂ Détacher"), () => detach(card.id)) : it(t("🔗 Attacher à… (cliquez la cible)"), () => attach(card.id))}
       </>}
-      {card.ownerSeat && zone === "battlefield" && it(t("↩ Rendre au propriétaire"), () => giveBack(card))}
-      {!card.faceDown && it(t("🎨 Changer l'illustration…"), () => pickArt(card))}
-      {card.token && it(t("🗑 Supprimer le jeton"), () => remove(card, zone))}
-      {sec(t("Envoyer vers"))}
-      {zone !== "hand" && it(t("✋ Main"), () => move(card.id, zone, "hand"))}
-      {zone !== "graveyard" && it(t("🪦 Cimetière"), () => move(card.id, zone, "graveyard"))}
-      {zone !== "exile" && it(t("🚫 Exil"), () => move(card.id, zone, "exile"))}
-      {card.isCmdr && zone !== "command" && it(t("⭐ Zone de commandement"), () => move(card.id, zone, "command"))}
-      {it(t("📚 Dessus de la bibliothèque"), () => move(card.id, zone, "library"))}
-      {it(t("📚 Dessous de la bibliothèque"), () => move(card.id, zone, "library", { bottom: true }))}
+
+      {/* le reste, regroupé en sections repliables (une seule ouverte à la fois) */}
+      {zone === "battlefield" && <>
+        {grp("marks", t("🎯 Marqueurs"), marksBadge, marksBody, n < 0)}
+        {grp("card", t("🃏 Carte & état"), null, cardBody)}
+        {grp("row", t("📐 Rangée"), ROWLBL[card.row] || null, rowBody)}
+      </>}
+      {zone !== "battlefield" && !card.faceDown && it(t("🎨 Changer l'illustration…"), () => pickArt(card))}
+      {zone !== "battlefield" && card.token && it(t("🗑 Supprimer le jeton"), () => remove(card, zone))}
+      {grp("send", t("📤 Envoyer vers…"), null, sendBody)}
     </div>
   );
 }
