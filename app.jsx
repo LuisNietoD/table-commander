@@ -107,9 +107,24 @@ async function removeCustom(id) {
   await saveCustom(next);
   return next;
 }
-/* carte perso -> charge utile attendue par spawnToken */
-const custToTk = (c) => ({ id: c.id, name: c.name, fn: c.fn || null, s: c.url || null, n: c.url || null,
-  cust: c.data ? c.id : null, t: c.t || "creature", pt: c.pt || null, type: c.t || "creature" });
+/* Copie dans MA bibliothèque une carte perso vue chez un autre joueur.
+   On rapatrie l'image pour ne pas dépendre de sa présence (les clés du serveur
+   expirent après 48 h). L'identifiant est conservé : même carte, même clé. */
+async function importCustom(entry) {
+  const data = entry.url ? null : await resolveCustom(entry.id);
+  return upsertCustom({ id: entry.id, name: entry.name, fn: entry.fn || null, t: entry.t || "creature",
+    pt: entry.pt || null, token: !!entry.token, url: entry.url || null, data: data || null });
+}
+
+/* carte perso -> charge utile attendue par spawnToken.
+   Règle : une carte à lien https porte son image dans `s`/`n` ; sinon l'image vit
+   sur la clé partagée « cust.<id> », qu'on désigne par `cust`. Cela vaut aussi
+   pour les cartes reçues des autres joueurs, dont on ne reçoit pas le `data`. */
+const custToTk = (c) => ({ id: c.id, name: c.name, fn: c.fn || null,
+  s: c.url || null, n: c.url || null, cust: c.url ? null : c.id,
+  t: c.t || "creature", pt: c.pt || null, type: c.t || "creature" });
+/* image affichable d'une carte perso, locale ou distante */
+const custThumb = (c) => c.data || c.url || CUSTOM_IMG[c.id] || null;
 
 /* publie (ou rafraîchit) l'image d'une carte perso pour les autres joueurs */
 async function publishCustom(c) {
@@ -487,6 +502,9 @@ const TR = {
   "🖌 Cartes personnalisées": "🖌 Custom cards",
   "Cartes personnalisées": "Custom cards",
   "Mes jetons personnalisés": "My custom tokens",
+  "Jetons des autres joueurs": "Other players' tokens",
+  "cliquez pour créer, ＋ pour l'ajouter à vos cartes": "click to create, ＋ to add it to your cards",
+  "Ajouter à mes cartes personnalisées": "Add to my custom cards",
   "Créer un jeton personnalisé (avec image)": "Create a custom token (with image)",
   "Nom (ex. Banana)": "Name (e.g. Banana)",
   "F/E": "P/T",
@@ -1618,6 +1636,7 @@ const HELP_FR = [
   "👁 <b>Révéler</b> : ⋮ sur une carte de votre main → « Révéler à tous » — la carte s'affiche en grand chez tous les joueurs.",
   "🪦 <b>Cimetière / Exil</b> : la carte du dessus se <b>glisse</b> directement vers le champ, la main… Survolez un nom de carte dans le journal pour la revoir.",
   "🖌 <b>Cartes personnalisées</b> : depuis l'accueil <i>ou</i> en pleine partie via « Créer un jeton », créez vos jetons inventés et cartes maison (image ou lien). Les jetons apparaissent dans « Créer un jeton » ; les autres se citent par leur nom dans une liste de deck.",
+  "👥 <b>Jetons partagés</b> : dans « Créer un jeton », vous voyez aussi les jetons perso des autres joueurs de la table. Cliquez pour en créer un, ou ＋ pour l'ajouter définitivement à vos cartes.",
   "⛓ <b>Groupes</b> : « Créer un groupe » (rail droit) pose une carte-groupe colorée. ⋮ dessus → « Lier des cartes », puis cliquez les cartes concernées. Tout marqueur mis sur le groupe s'applique aussi à toutes ses cartes liées (pastille de couleur en haut des cartes).",
   "👁 <b>Survolez</b> n'importe quelle carte pour la lire en grand sur le côté gauche.",
   "🎲 Les dés, la pièce et chaque action sont inscrits dans le journal (rail droit), visible par les deux joueurs.",
@@ -1636,6 +1655,7 @@ const HELP_EN = [
   "👁 <b>Reveal</b>: ⋮ on a card in your hand → “Reveal to everyone” — the card is shown large to every player.",
   "🪦 <b>Graveyard / Exile</b>: the top card can be <b>dragged</b> straight to the battlefield, your hand… Hover a card name in the log to see it again.",
   "🖌 <b>Custom cards</b>: from the home screen <i>or</i> mid-game via “Create a token”, build your homebrew tokens and custom cards (image or link). Tokens show up in “Create a token”; the rest can be referenced by name in a decklist.",
+  "👥 <b>Shared tokens</b>: in “Create a token” you also see the other players' custom tokens. Click to create one, or ＋ to add it to your own cards for good.",
   "⛓ <b>Groups</b>: “Create a group” (right rail) drops a colored group card. ⋮ on it → “Link cards”, then click the cards. Any counter put on the group also applies to all its linked cards (colored dot on top of the cards).",
   "👁 <b>Hover</b> any card to read it full-size on the left side.",
   "🎲 Dice, coin flips and every action are written to the log (right rail), visible to all players.",
@@ -1776,10 +1796,23 @@ function Game({ room, onQuit, uiLang, onLang }) {
 
   useEffect(() => {
     let stop = false;
+    let round = 0;
     const tick = async () => {
       const m = await sget(metaKey, true);
       if (m && !m.order) m.order = Object.keys(m.names || {});
       if (m && !stop) setMeta(m);
+      /* Catalogues de cartes perso des autres joueurs : ça bouge rarement, on ne
+         les relit qu'un tour sur quatre (≈10 s) pour ménager le débit du serveur. */
+      if (round % 4 === 0) {
+        const cats = {};
+        for (const sx of (m && m.order) || []) {
+          if (sx === seat) continue;
+          const c = await sget(`mtgr-${code}-cust-${sx}`, true);
+          if (c && c.cards && c.cards.length) cats[sx] = c;
+        }
+        if (!stop) setRoomCust(cats);
+      }
+      round++;
       const next = {};
       const present = new Set(); // ids masqués encore présents chez un adversaire
       for (const sx of (m && m.order) || []) {
@@ -1856,12 +1889,23 @@ function Game({ room, onQuit, uiLang, onLang }) {
   /* Cartes personnalisées : on republie mes images au lancement (les clés du
      serveur expirent après 48 h) et on récupère celles des autres joueurs. */
   const [custTick, setCustTick] = useState(0);
+  const [roomCust, setRoomCust] = useState({}); // siège -> { name, cards } : bibliothèques des autres
+  /* Publie mon catalogue de cartes perso (métadonnées seulement : les images
+     vivent déjà sur leurs propres clés « cust.<id> »). Les autres joueurs le
+     lisent et peuvent piocher dedans. */
+  const publishCatalog = async () => {
+    const list = await loadCustom();
+    await sset(`mtgr-${code}-cust-${seat}`,
+      { name: pname, cards: list.map((c) => ({ id: c.id, name: c.name, fn: c.fn || null, t: c.t, pt: c.pt || null, token: !!c.token, url: c.url || null })) },
+      true);
+  };
   useEffect(() => {
     let stop = false;
     (async () => {
       const mine = await loadCustom();
       let n = 0;
       for (const c of mine) if (c.data) { await publishCustom(c); n++; }
+      await publishCatalog();
       // publishCustom remplit CUSTOM_IMG : il faut un rendu pour que les cartes s'affichent
       if (n && !stop) setCustTick((v) => v + 1);
     })();
@@ -2629,7 +2673,8 @@ function Game({ room, onQuit, uiLang, onLang }) {
         </div>
       )}
 
-      {tokenPick && <TokenPicker onSpawn={spawnToken} close={() => setTokenPick(false)} onHover={setHover} />}
+      {tokenPick && <TokenPicker onSpawn={spawnToken} close={() => setTokenPick(false)} onHover={setHover}
+        roomCust={roomCust} onLibChange={publishCatalog} />}
 
       {artPick && <ArtPicker card={artPick} close={() => setArtPick(null)} onHover={setHover}
         onPick={(p, all) => { applyArt(artPick, p, all); setArtPick(null); }} />}
@@ -2946,7 +2991,7 @@ const TOKEN_FR = {
   "chasseur": "Ranger", "eclat": "Shard", "fragment": "Shard", "relique": "Relic",
 };
 
-function TokenPicker({ onSpawn, close, onHover }) {
+function TokenPicker({ onSpawn, close, onHover, roomCust = {}, onLibChange }) {
   const [q, setQ] = useState("");
   const [res, setRes] = useState(null); // null = rien cherché, [] = aucun résultat
   const [busy, setBusy] = useState(false);
@@ -2982,13 +3027,46 @@ function TokenPicker({ onSpawn, close, onHover }) {
       token: true, url: nData ? null : nUrl.trim(), data: nData || null };
     const next = await upsertCustom(entry);
     setMine(next.filter((c) => c.token));
+    if (onLibChange) onLibChange(); // partage la nouvelle carte avec la table
     if (spawnNow) pick(custToTk(entry));
     nReset(); setNOpen(false); setNBusy(false);
   };
-  const nDel = async (c) => { const next = await removeCustom(c.id); setMine(next.filter((x) => x.token)); };
-  /* mes jetons perso, filtrés par la recherche en cours (nom FR ou EN) */
+  const nDel = async (c) => { const next = await removeCustom(c.id); setMine(next.filter((x) => x.token)); if (onLibChange) onLibChange(); };
+
+  /* ---- jetons perso des AUTRES joueurs (catalogues du salon) ---- */
+  const [imgTick, setImgTick] = useState(0);
+  const mineIds = new Set(mine.map((c) => c.id));
+  const others = [];
+  for (const sx of Object.keys(roomCust)) {
+    const cat = roomCust[sx];
+    for (const c of (cat.cards || [])) {
+      if (!c.token || mineIds.has(c.id)) continue; // déjà chez moi : pas de doublon
+      others.push({ ...c, owner: cat.name || sx });
+    }
+  }
+  /* leurs images vivent sur « cust.<id> » : on les récupère à l'ouverture */
+  useEffect(() => {
+    const need = others.filter((c) => !c.url && CUSTOM_IMG[c.id] === undefined).map((c) => c.id);
+    if (!need.length) return;
+    let stop = false;
+    Promise.all(need.map(resolveCustom)).then(() => { if (!stop) setImgTick((v) => v + 1); });
+    return () => { stop = true; };
+  }, [others.map((c) => c.id).join(",")]);
+
+  const [imported, setImported] = useState({}); // id -> true, retour visuel après import
+  const doImport = async (c) => {
+    const next = await importCustom(c);
+    setMine(next.filter((x) => x.token));
+    setImported((m) => ({ ...m, [c.id]: true }));
+    if (onLibChange) onLibChange(); // mon catalogue contient désormais cette carte
+  };
+
+  /* jetons perso (les miens et ceux de la table), filtrés par la recherche en cours */
   const nq = norm(q);
-  const mineShown = nq ? mine.filter((c) => norm(c.name).includes(nq) || norm(c.fn || "").includes(nq)) : mine;
+  const match = (c) => norm(c.name).includes(nq) || norm(c.fn || "").includes(nq);
+  const mineShown = nq ? mine.filter(match) : mine;
+  const othersShown = nq ? others.filter(match) : others;
+
   const makeCustom = () => {
     const name = cn.trim(); if (!name) return;
     pick({ id: "txt-" + name.toLowerCase() + "-" + cpt.trim(), name, fn: name, s: null, n: null, t: "creature", pt: cpt.trim() || null });
@@ -3108,7 +3186,7 @@ function TokenPicker({ onSpawn, close, onHover }) {
             <div className="hint" style={{ marginBottom: 6 }}>🖌 {t("Mes jetons personnalisés")}</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
               {mineShown.map((c) => {
-                const im = c.data || c.url || null;
+                const im = custThumb(c);
                 return (
                   <div key={c.id} style={{ width: 118, position: "relative" }}>
                     <div onClick={() => pick(custToTk(c))} title={t("cliquez pour créer")} style={{ cursor: "pointer" }}
@@ -3124,6 +3202,39 @@ function TokenPicker({ onSpawn, close, onHover }) {
                     </div>
                     <button className="btn ghost danger" style={{ position: "absolute", top: 2, left: 2, padding: "1px 5px", fontSize: 10 }}
                       title={t("Supprimer de mes jetons")} onClick={(e) => { e.stopPropagation(); nDel(c); }}>🗑</button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ---- jetons perso des autres joueurs de la table ---- */}
+        {othersShown.length > 0 && (
+          <div style={{ marginBottom: 12, borderBottom: "1px solid var(--line)", paddingBottom: 10 }}>
+            <div className="hint" style={{ marginBottom: 6 }}>
+              👥 {t("Jetons des autres joueurs")} — {t("cliquez pour créer, ＋ pour l'ajouter à vos cartes")}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+              {othersShown.map((c) => {
+                const im = custThumb(c);
+                return (
+                  <div key={c.id} style={{ width: 118, position: "relative" }}>
+                    <div onClick={() => pick(custToTk(c))} title={t("cliquez pour créer")} style={{ cursor: "pointer" }}
+                      onMouseEnter={() => onHover && onHover({ img: im, imgN: im, name: c.name, fn: c.fn })}
+                      onMouseLeave={() => onHover && onHover(null)}>
+                      <div className="card-i" style={{ height: 165 }}>
+                        {im ? <img src={im} alt={c.fn || c.name} /> : <div className="card-txt">{c.fn || c.name}</div>}
+                      </div>
+                      {made[c.id] > 0 && <div className="badge">✓ ×{made[c.id]}</div>}
+                    </div>
+                    <div className="hint" style={{ marginTop: 3, textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {c.fn || c.name}{c.pt ? ` · ${c.pt}` : ""}
+                    </div>
+                    <div className="hint" style={{ textAlign: "center", opacity: .7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.owner}</div>
+                    <button className="btn ghost" style={{ position: "absolute", top: 2, left: 2, padding: "1px 6px", fontSize: 11 }}
+                      title={t("Ajouter à mes cartes personnalisées")} disabled={!!imported[c.id]}
+                      onClick={(e) => { e.stopPropagation(); doImport(c); }}>{imported[c.id] ? "✓" : "＋"}</button>
                   </div>
                 );
               })}
