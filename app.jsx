@@ -380,6 +380,18 @@ const TR = {
   "🙈 Jouer face cachée": "🙈 Play face down",
   "🗑 Se défausser": "🗑 Discard",
   "⭐ Lancer le commandant": "⭐ Cast the commander",
+  "Jouer la face avant": "Play the front face",
+  "Jouer la face arrière": "Play the back face",
+  "Lancer la face avant": "Cast the front face",
+  "Lancer la face arrière": "Cast the back face",
+  "Toutes les cartes regardées ont été déplacées.": "Every card you looked at has been moved.",
+  "Exiler X": "Exile X",
+  "Exiler — combien de cartes de la bibliothèque ?": "Exile — how many cards from your library?",
+  "essaie d'exiler… bibliothèque vide !": "tries to exile… empty library!",
+  "de sa bibliothèque": "from their library",
+  "exile son cimetière": "exiles their graveyard",
+  "Tout exiler": "Exile everything",
+  "(effets du groupe appliqués)": "(group effects applied)",
   "↺ Dégager": "↺ Untap",
   "⤵ Engager": "⤵ Tap",
   "✂ Détacher": "✂ Detach",
@@ -1069,6 +1081,10 @@ body.en .handzone.drop-over::after{content:"Return to hand" !important;}
 /* quand une fenêtre de recherche est ouverte, on colle l'aperçu au bord
    gauche pour qu'il ne recouvre pas la fenêtre (et reste bien visible). */
 body.has-modal .preview{left:10px;}
+/* si la carte survolée est du côté gauche, l'aperçu bascule à droite pour ne
+   jamais recouvrir la carte qu'on regarde */
+.preview.right{left:auto; right:14px; align-items:flex-end;}
+body.has-modal .preview.right{left:auto; right:10px;}
 .pv-marks{margin-top:0; display:flex; flex-direction:column; gap:3px; max-height:26vh; overflow:auto; width:100%;}
 .pv-mark{background:rgba(8,17,19,.96); border:1px solid var(--gold2); border-radius:8px; padding:3px 9px; font-size:12.5px; color:var(--ink);}
 .pv-mark b{color:var(--gold);}
@@ -1669,6 +1685,12 @@ function Stack({ host, atts, w, off, mine, mirror, collapsed, onToggle, onTap, o
      en a beaucoup ; « rangé » (collapsed) les glisse presque sous l'hôte. */
   const spread = collapsed ? 3 : (n ? Math.min(off, Math.round((h * 1.15) / n)) : off);
   const dir = mirror ? -1 : 1; // adversaire (miroir) : vers le haut ; moi : vers le bas
+  /* Asymétrie voulue : vers le HAUT (adversaire) on aperçoit le sommet de
+     l'équipement, ce qui suffit à le reconnaître. Vers le BAS (mon côté) on
+     n'en verrait que le bord inférieur — et comme l'équipement est plus petit
+     que l'hôte, il disparaîtrait presque entièrement dessous. On le descend
+     donc d'un demi-hôte pour dégager une bande lisible. */
+  const base = (mirror || collapsed) ? 0 : Math.round(h * 0.45);
   return (
     <div className={attachTarget ? "att-target" : ""}
       style={{ position: "relative", width: w + (n ? 12 : 0), height: h, flex: "none" }}
@@ -1676,7 +1698,7 @@ function Stack({ host, atts, w, off, mine, mirror, collapsed, onToggle, onTap, o
       onDrop={mine ? (e) => { e.preventDefault(); e.stopPropagation(); try { const d = JSON.parse(e.dataTransfer.getData("text/plain")); onAttachDrop(host, d); } catch (er) {} } : undefined}
     >
       {atts.map((a, i) => (
-        <div key={a.id} style={{ position: "absolute", top: dir * (n - i) * spread, left: 12, zIndex: i + 1 }}>
+        <div key={a.id} style={{ position: "absolute", top: dir * (base + (n - i) * spread), left: 12, zIndex: i + 1 }}>
           <Card card={a} w={w - 12} mine={mine} zone="battlefield" onTap={onTap} onMenu={onMenu} onHover={onHover} onTransform={onTransform} />
         </div>
       ))}
@@ -1886,7 +1908,7 @@ const HELP_FR = [
   "🏷 <b>Marqueurs</b> : ⋮ sur une carte en jeu → boutons <b>+1</b> / <b>−1</b> pour les marqueurs <b>+1/+1</b> et <b>-1/-1</b> (ils s'annulent). Les marqueurs courants (poison, loyauté, charge…) s'ajoutent en un clic ; « Marqueur nommé… » pour tout le reste.",
   "⚔ <b>Mode attaque</b> : bouton ⚔ (rail droit). Cliquez vos créatures pour les déclarer attaquantes : elles s'engagent et gardent un <b>cadre rouge</b> jusqu'à ce que vous les dégagiez.",
   "👁 <b>Révéler</b> : ⋮ sur une carte de votre main → « Révéler à tous » — la carte s'affiche en grand chez tous les joueurs.",
-  "🪦 <b>Cimetière / Exil</b> : la carte du dessus se <b>glisse</b> directement vers le champ, la main… Survolez un nom de carte dans le journal pour la revoir.",
+  "🪦 <b>Cimetière / Exil</b> : la carte du dessus se <b>glisse</b> directement vers le champ, la main… Le cimetière a un bouton « Tout exiler », et le rail droit un bouton « Exiler X » depuis la bibliothèque. Survolez un nom de carte dans le journal pour la revoir.",
   "🖌 <b>Cartes personnalisées</b> : depuis l'accueil <i>ou</i> en pleine partie via « Créer un jeton », créez vos jetons inventés et cartes maison (image ou lien). Les jetons apparaissent dans « Créer un jeton » ; les autres se citent par leur nom dans une liste de deck.",
   "👥 <b>Jetons partagés</b> : dans « Créer un jeton », vous voyez aussi les jetons perso des autres joueurs de la table. Cliquez pour en créer un, ou ＋ pour l'ajouter définitivement à vos cartes.",
   "⛓ <b>Groupes</b> : « Créer un groupe » (rail droit) pose une carte-groupe colorée. ⋮ dessus → « Lier des cartes », puis cliquez les cartes concernées. Tout marqueur mis sur le groupe s'applique aussi à toutes ses cartes liées (pastille de couleur en haut des cartes).",
@@ -1905,7 +1927,7 @@ const HELP_EN = [
   "🏷 <b>Counters</b>: ⋮ on a battlefield card → <b>+1</b> / <b>−1</b> buttons for <b>+1/+1</b> and <b>-1/-1</b> counters (they cancel out). Common counters (poison, loyalty, charge…) are one click away; “Named counter…” for anything else.",
   "⚔ <b>Attack mode</b>: ⚔ button (right rail). Click your creatures to declare them attackers: they tap and keep a <b>red outline</b> until you untap them.",
   "👁 <b>Reveal</b>: ⋮ on a card in your hand → “Reveal to everyone” — the card is shown large to every player.",
-  "🪦 <b>Graveyard / Exile</b>: the top card can be <b>dragged</b> straight to the battlefield, your hand… Hover a card name in the log to see it again.",
+  "🪦 <b>Graveyard / Exile</b>: the top card can be <b>dragged</b> straight to the battlefield, your hand… The graveyard has an “Exile everything” button, and the right rail an “Exile X” button from your library. Hover a card name in the log to see it again.",
   "🖌 <b>Custom cards</b>: from the home screen <i>or</i> mid-game via “Create a token”, build your homebrew tokens and custom cards (image or link). Tokens show up in “Create a token”; the rest can be referenced by name in a decklist.",
   "👥 <b>Shared tokens</b>: in “Create a token” you also see the other players' custom tokens. Click to create one, or ＋ to add it to your own cards for good.",
   "⛓ <b>Groups</b>: “Create a group” (right rail) drops a colored group card. ⋮ on it → “Link cards”, then click the cards. Any counter put on the group also applies to all its linked cards (colored dot on top of the cards).",
@@ -1927,6 +1949,14 @@ function Game({ room, onQuit, uiLang, onLang }) {
   const [viewer, setViewer] = useState(null);
   const [topN, setTopN] = useState(null);
   const [hover, setHover] = useState(null);
+  /* Position du pointeur : sert à placer l'aperçu du côté opposé à la carte
+     survolée, pour qu'il ne la recouvre jamais. */
+  const mouseX = useRef(0);
+  useEffect(() => {
+    const onMove = (e) => { mouseX.current = e.clientX; };
+    window.addEventListener("mousemove", onMove, { passive: true });
+    return () => window.removeEventListener("mousemove", onMove);
+  }, []);
   const [ask, setAsk] = useState(null);
   const [askVal, setAskVal] = useState("");
   const [confirmReset, setConfirmReset] = useState(false);
@@ -2264,6 +2294,9 @@ function Game({ room, onQuit, uiLang, onLang }) {
       const zones = { ...s.zones }; const src = [...zones[from]];
       const i = src.findIndex((c) => c.id === id); if (i < 0) return s;
       const [c0] = src.splice(i, 1); const card = { ...c0 };
+      /* Face jouée d'une carte recto-verso : choisie à la pose, avant de composer
+         le message du journal (pour qu'il nomme la bonne face). */
+      if (to === "battlefield" && card.dfc) card.flipped = !!opt.flipped;
       const shown = card.faceDown && from !== "hand" ? t("une carte face cachée") : dn(card);
       if (to !== "battlefield") { card.tapped = false; card.atk = false; card.atkWasTapped = undefined; card.faceDown = false; card.flipped = false; card.counters = 0; card.marks = null; card.groups = null; card.bx = null; card.by = null; }
       card.host = null;
@@ -2412,6 +2445,24 @@ function Game({ room, onQuit, uiLang, onLang }) {
     return withLog({ ...s, zones: { ...s.zones, library: lib, hand } },
       `${t("fait un mulligan : main mélangée dans la bibliothèque, re-pioche")} ${hand.length} ${hand.length > 1 ? t("cartes") : t("carte")}`);
   });
+  /* Exile les N cartes du dessus de la bibliothèque (« meuler », mais vers l'exil). */
+  const exileTop = (n) => setMy((s) => {
+    const lib = [...s.zones.library];
+    const take = lib.splice(0, n).map((c) => ({ ...c, faceDown: false, tapped: false, flipped: false }));
+    if (!take.length) return withLog(s, t("essaie d'exiler… bibliothèque vide !"));
+    const names = take.length <= 5 ? " : " + take.map(dn).join(", ") : "";
+    return withLog({ ...s, zones: { ...s.zones, library: lib, exile: [...s.zones.exile, ...take] } },
+      `${t("exile")} ${take.length} ${take.length > 1 ? t("cartes") : t("carte")} ${t("de sa bibliothèque")}${names}`);
+  });
+  /* Envoie tout le cimetière à l'exil (effets du type « exilez votre cimetière »). */
+  const exileGraveyard = () => setMy((s) => {
+    const gy = s.zones.graveyard;
+    if (!gy.length) return s;
+    const take = gy.map((c) => ({ ...c, faceDown: false, tapped: false, flipped: false }));
+    return withLog({ ...s, zones: { ...s.zones, graveyard: [], exile: [...s.zones.exile, ...take] } },
+      `${t("exile son cimetière")} (${take.length})`);
+  });
+
   const mill = (n) => setMy((s) => {
     const lib = [...s.zones.library];
     const take = lib.splice(0, n).map((c) => ({ ...c, faceDown: false, tapped: false }));
@@ -2441,6 +2492,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
     if (!a) return;
     if (a.type === "look") { const n = parseInt(v, 10); if (n > 0) { setTopN(n); addLog(`${t("regarde les")} ${n} ${t("cartes du dessus")}`); } }
     else if (a.type === "mill") { const n = parseInt(v, 10); if (n > 0) mill(n); }
+    else if (a.type === "exlib") { const n = parseInt(v, 10); if (n > 0) exileTop(n); }
     else if (a.type === "mull") { const n = parseInt(v, 10); if (n > 0) mulligan(n); }
     else if (a.type === "mark" && v) bumpMark(a.cardId, v, 1);
     else if (a.type === "group" && v) spawnGroup(v);
@@ -2545,11 +2597,21 @@ function Game({ room, onQuit, uiLang, onLang }) {
     const bf = s.zones.battlefield.map((c) => {
       if (c.id !== card.id) return c;
       const groups = { ...(c.groups || {}) };
-      if (adding) groups[groupId] = g.color; else delete groups[groupId];
-      return { ...c, groups };
+      if (!adding) { delete groups[groupId]; return { ...c, groups }; }
+      groups[groupId] = g.color;
+      /* Une carte qui rejoint un groupe récupère les effets déjà posés dessus :
+         les marqueurs +1/+1 (compteur signé) et les marqueurs nommés du groupe. */
+      const marks = { ...(c.marks || {}) };
+      for (const k of Object.keys(g.marks || {})) marks[k] = (marks[k] || 0) + g.marks[k];
+      return { ...c, groups,
+        counters: (c.counters || 0) + (g.counters || 0),
+        marks: Object.keys(marks).length ? marks : null };
     });
+    const sync = adding && ((g.counters || 0) !== 0 || Object.keys(g.marks || {}).length > 0);
     return withLog({ ...s, zones: { ...s.zones, battlefield: bf } },
-      adding ? `${t("lie")} ${dn(card)} ${t("au groupe")} « ${dn(g)} »` : `${t("délie")} ${dn(card)} ${t("du groupe")} « ${dn(g)} »`);
+      adding ? `${t("lie")} ${dn(card)} ${t("au groupe")} « ${dn(g)} »${sync ? ` ${t("(effets du groupe appliqués)")}` : ""}`
+             : `${t("délie")} ${dn(card)} ${t("du groupe")} « ${dn(g)} »`,
+      lc(card));
   });
 
   const removeCard = (card, zone) => setMy((s) => withLog({ ...s, zones: { ...s.zones,
@@ -2840,6 +2902,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
             <button className="btn" onClick={() => { setAskVal("7"); setAsk({ type: "mull", title: t("Mulligan — re-piocher combien ?"), num: true }); }}>Mulligan</button>
             <button className="btn" onClick={() => { setAskVal("3"); setAsk({ type: "look", title: t("Regarder le dessus"), num: true }); }}>{t("Regarder X")}</button>
             <button className="btn" onClick={() => { setAskVal("3"); setAsk({ type: "mill", title: t("Meuler — combien de cartes au cimetière ?"), num: true }); }}>{t("Meuler X")}</button>
+            <button className="btn" onClick={() => { setAskVal("3"); setAsk({ type: "exlib", title: t("Exiler — combien de cartes de la bibliothèque ?"), num: true }); }}>{t("Exiler X")}</button>
             <button className="btn" onClick={() => { setViewer({ who: "me", zone: "library" }); addLog(t("cherche dans sa bibliothèque")); }}>{t("Chercher")}</button>
             <button className="btn" style={{ gridColumn: "1 / -1" }} onClick={() => setTokenPick(true)}>{t("+ Créer un jeton")}</button>
             <button className="btn" style={{ gridColumn: "1 / -1" }} onClick={() => { setAskVal(""); setAsk({ type: "group", title: t("Nom du groupe"), placeholder: t("ex. équipe d'attaque, enchantés…") }); }}>{t("⛓ Créer un groupe")}</button>
@@ -2932,7 +2995,7 @@ function Game({ room, onQuit, uiLang, onLang }) {
         onPick={(p, all) => { applyArt(artPick, p, all); setArtPick(null); }} />}
 
       {/* ===== visionneuses ===== */}
-      {viewer && <ZoneViewer viewer={viewer} my={my} opp={opp} move={move} doShuffle={doShuffle} close={() => setViewer(null)} onHover={setHover} steal={stealFromOpp} />}
+      {viewer && <ZoneViewer viewer={viewer} my={my} opp={opp} move={move} doShuffle={doShuffle} exileAll={exileGraveyard} close={() => setViewer(null)} onHover={setHover} steal={stealFromOpp} />}
       {topN && <TopViewer n={topN} my={my} move={move} close={() => setTopN(null)} onHover={setHover} />}
 
       {/* ===== carte révélée à toute la table ===== */}
@@ -2948,15 +3011,20 @@ function Game({ room, onQuit, uiLang, onLang }) {
       )}
 
       {/* ===== aperçu ===== */}
-      {hover && !hover.faceDown && fimg(hover) && (
-        <div className="preview"><img src={fimgN(hover) || fimg(hover)} alt="" /><PreviewMarks card={hover} /></div>
-      )}
-      {hover && !hover.faceDown && !fimg(hover) && (
-        <div className="preview">
-          <div className="pv-txtwrap" style={{ background: "#1d1a26", border: "1px solid var(--gold)", borderRadius: 11, padding: 16, fontSize: 15, textAlign: "center" }}>{dn(hover)}</div>
-          <PreviewMarks card={hover} />
-        </div>
-      )}
+      {(() => {
+        if (!hover || hover.faceDown) return null;
+        // aperçu à droite si la carte survolée est dans la moitié gauche de l'écran
+        const side = mouseX.current < window.innerWidth * 0.5 ? " right" : "";
+        const im = fimg(hover);
+        return im ? (
+          <div className={"preview" + side}><img src={fimgN(hover) || im} alt="" /><PreviewMarks card={hover} /></div>
+        ) : (
+          <div className={"preview" + side}>
+            <div className="pv-txtwrap" style={{ background: "#1d1a26", border: "1px solid var(--gold)", borderRadius: 11, padding: 16, fontSize: 15, textAlign: "center" }}>{dn(hover)}</div>
+            <PreviewMarks card={hover} />
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -3090,12 +3158,22 @@ function CardMenu({ menu, close, move, bump, flip, transform, reveal, clone, tap
 
       {/* actions fréquentes : toujours visibles, sans repli */}
       {zone === "hand" && <>
-        {it(t("▶ Jouer"), () => move(card.id, "hand", "battlefield"))}
+        {card.dfc
+          ? <>
+              {it(`▶ ${t("Jouer la face avant")} — ${card.fn || card.name}`, () => move(card.id, "hand", "battlefield", { flipped: false }))}
+              {it(`▶ ${t("Jouer la face arrière")} — ${card.bfn || card.bname || "?"}`, () => move(card.id, "hand", "battlefield", { flipped: true }))}
+            </>
+          : it(t("▶ Jouer"), () => move(card.id, "hand", "battlefield"))}
         {it(t("🙈 Jouer face cachée"), () => move(card.id, "hand", "battlefield", { faceDown: true }))}
         {reveal && it(t("👁 Révéler à tous"), () => reveal(card))}
         {it(t("🗑 Se défausser"), () => move(card.id, "hand", "graveyard"))}
       </>}
-      {zone === "command" && it(t("⭐ Lancer le commandant"), () => move(card.id, "command", "battlefield"))}
+      {zone === "command" && (card.dfc
+        ? <>
+            {it(`⭐ ${t("Lancer la face avant")}`, () => move(card.id, "command", "battlefield", { flipped: false }))}
+            {it(`⭐ ${t("Lancer la face arrière")}`, () => move(card.id, "command", "battlefield", { flipped: true }))}
+          </>
+        : it(t("⭐ Lancer le commandant"), () => move(card.id, "command", "battlefield")))}
       {zone === "battlefield" && <>
         {it(card.tapped ? t("↺ Dégager") : t("⤵ Engager"), () => tap(card))}
         {card.dfc && transform && !card.faceDown && it(t("⟳ Transformer"), () => transform(card.id))}
@@ -3523,7 +3601,7 @@ function TokenPicker({ onSpawn, close, onHover, roomCust = {}, onLibChange }) {
   );
 }
 
-function ZoneViewer({ viewer, my, opp, move, doShuffle, close, onHover, steal }) {
+function ZoneViewer({ viewer, my, opp, move, doShuffle, close, onHover, steal, exileAll }) {
   const [q, setQ] = useState("");
   useEffect(() => () => { if (onHover) onHover(null); }, []); // pas d'aperçu figé à la fermeture
   const isMe = viewer.who === "me";
@@ -3543,6 +3621,8 @@ function ZoneViewer({ viewer, my, opp, move, doShuffle, close, onHover, steal })
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
           <h3 className="disp" style={{ margin: 0, fontSize: 14, color: "var(--gold)", textTransform: "none", letterSpacing: ".06em" }}>{title}</h3>
           <div className="row">
+            {isMe && viewer.zone === "graveyard" && cards.length > 0 && exileAll &&
+              <button className="btn" onClick={() => { exileAll(); close(); }}>🚫 {t("Tout exiler")}</button>}
             {isMe && viewer.zone === "library" && <button className="btn" onClick={() => { doShuffle(); close(); }}>{t("Mélanger & fermer")}</button>}
             <button className="btn ghost" onClick={close}>{t("Fermer ✕")}</button>
           </div>
@@ -3566,6 +3646,7 @@ function ZoneViewer({ viewer, my, opp, move, doShuffle, close, onHover, steal })
                   <button className="btn ghost" style={{ padding: "2px 6px", fontSize: 10 }} onClick={() => move(c.id, viewer.zone, "hand")}>{t("Main")}</button>
                   <button className="btn ghost" style={{ padding: "2px 6px", fontSize: 10 }} onClick={() => move(c.id, viewer.zone, "battlefield")}>{t("Champ")}</button>
                   {viewer.zone !== "graveyard" && <button className="btn ghost" style={{ padding: "2px 6px", fontSize: 10 }} onClick={() => move(c.id, viewer.zone, "graveyard")}>{t("Cim.")}</button>}
+                  {viewer.zone !== "exile" && <button className="btn ghost" style={{ padding: "2px 6px", fontSize: 10 }} onClick={() => move(c.id, viewer.zone, "exile")}>{t("Exil")}</button>}
                 </div>
               )}
               {!isMe && steal && (
@@ -3587,7 +3668,12 @@ function ZoneViewer({ viewer, my, opp, move, doShuffle, close, onHover, steal })
 }
 
 function TopViewer({ n, my, move, close, onHover }) {
-  const top = my.zones.library.slice(0, n);
+  /* On fige les cartes regardées à l'ouverture : retirer la 3e ne doit PAS faire
+     remonter la 4e (on n'a le droit de voir que les n cartes annoncées). */
+  const [ids] = useState(() => my.zones.library.slice(0, n).map((c) => c.id));
+  const byId = new Map(my.zones.library.map((c) => [c.id, c]));
+  const top = ids.map((id) => byId.get(id)).filter(Boolean);
+  useEffect(() => () => { if (onHover) onHover(null); }, []);
   return (
     <div className="modal-bg" onClick={close}>
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640 }}>
@@ -3597,7 +3683,11 @@ function TopViewer({ n, my, move, close, onHover }) {
         </div>
         <div className="hint" style={{ marginBottom: 10 }}>{t("De gauche (dessus) à droite. Les cartes laissées restent dans cet ordre.")}</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-          {top.map((c, i) => (
+          {top.length === 0 && <div className="hint">{t("Toutes les cartes regardées ont été déplacées.")}</div>}
+          {ids.map((id, i) => {
+            const c = byId.get(id);
+            if (!c) return null; // carte déjà déplacée : sa place reste vide, rien ne remonte
+            return (
             <div key={c.id} style={{ width: 96 }}>
               <div className="hint" style={{ textAlign: "center" }}>#{i + 1}</div>
               <div className="card-i" style={{ height: 134 }} onMouseEnter={() => onHover(c)} onMouseLeave={() => onHover(null)}>
@@ -3605,12 +3695,14 @@ function TopViewer({ n, my, move, close, onHover }) {
               </div>
               <div style={{ display: "flex", gap: 3, marginTop: 4, flexWrap: "wrap" }}>
                 <button className="btn ghost" style={{ padding: "2px 6px", fontSize: 10 }} onClick={() => move(c.id, "library", "hand")}>{t("Main")}</button>
+                <button className="btn ghost" style={{ padding: "2px 6px", fontSize: 10 }} onClick={() => move(c.id, "library", "battlefield")}>{t("Champ")}</button>
                 <button className="btn ghost" style={{ padding: "2px 6px", fontSize: 10 }} onClick={() => move(c.id, "library", "library", { bottom: true })}>{t("Dessous")}</button>
                 <button className="btn ghost" style={{ padding: "2px 6px", fontSize: 10 }} onClick={() => move(c.id, "library", "graveyard")}>{t("Cim.")}</button>
+                <button className="btn ghost" style={{ padding: "2px 6px", fontSize: 10 }} onClick={() => move(c.id, "library", "exile")}>{t("Exil")}</button>
               </div>
             </div>
-          ))}
-          {top.length === 0 && <div className="hint">{t("Bibliothèque vide.")}</div>}
+            );
+          })}
         </div>
       </div>
     </div>
