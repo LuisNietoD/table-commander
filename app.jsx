@@ -414,7 +414,7 @@ const TR = {
   "Quitter (Échap)": "Exit (Esc)",
   "Clic : fouiller · Glissez la carte du dessus pour la déplacer": "Click: search · Drag the top card to move it",
   "⟳ Transformer": "⟳ Transform",
-  "Deck importé avant la prise en charge du recto-verso ? Recliquez sur « Importer les cartes » pour récupérer les faces arrière.": "Deck imported before double-faced support? Click “Import cards” again to fetch the back faces.",
+  "Deck importé avec une version plus ancienne ? Recliquez sur « Importer les cartes » pour récupérer les faces arrière et l'estimation du bracket.": "Deck imported with an older version? Click “Import cards” again to fetch the back faces and the bracket estimate.",
   "Transformer (recto-verso)": "Transform (double-faced)",
   "transforme": "transforms",
   "🙈 Face cachée": "🙈 Face down",
@@ -499,6 +499,31 @@ const TR = {
   "Simulateur manuel pour 2 à 6 joueurs · vous résolvez les effets vous-mêmes, comme sur une vraie table": "Manual simulator for 2–6 players · you resolve effects yourselves, just like at a real table",
   "Modifier le deck": "Edit deck",
   "Nouveau deck": "New deck",
+  "Bracket estimé": "Estimated bracket",
+  "analyse des combos…": "analysing combos…",
+  "combo(s) infini(s) 2 cartes": "two-card infinite combo(s)",
+  "précoce(s)": "early",
+  "précoce": "early",
+  "combos non vérifiés": "combos not verified",
+  "Combos infinis en deux cartes": "Two-card infinite combos",
+  "VM cumulée": "combined MV",
+  "Ré-analyser les combos": "Re-analyse combos",
+  "Interroger Commander Spellbook à l'import": "Query Commander Spellbook on import",
+  "Aucun combo infini en deux cartes en bracket 1-2 ; en bracket 3 seuls les combos précoces (valeur de mana cumulée ≤ 7) sont exclus.": "No two-card infinite combos in brackets 1-2; bracket 3 only excludes early ones (combined mana value ≤ 7).",
+  "Combos vérifiés via Commander Spellbook. Restent hors de portée : la vitesse réelle du deck et sa synergie. À confirmer lors de la discussion d'avant-partie.": "Combos verified via Commander Spellbook. Still out of reach: the deck's actual speed and synergy. Confirm it in your pregame conversation.",
+  "bracket": "bracket",
+  "Voir le détail": "Show details",
+  "Masquer le détail": "Hide details",
+  "tour(s) supplémentaire(s)": "extra-turn spell(s)",
+  "destruction de terrains": "mass land denial",
+  "tuteur(s)": "tutor(s)",
+  "carte(s) non légale(s)": "card(s) not legal",
+  "carte(s) non identifiée(s)": "unidentified card(s)",
+  "Tours supplémentaires": "Extra turns",
+  "Destruction massive de terrains": "Mass land denial",
+  "Non légales en Commander": "Not legal in Commander",
+  "Règle officielle : aucun Game Changer en bracket 1-2, jusqu'à 3 en bracket 3, illimité en 4-5.": "Official rule: no Game Changers in brackets 1-2, up to 3 in bracket 3, unlimited in 4-5.",
+  "Estimation, pas un verdict : les combos infinis en deux cartes et la vitesse réelle du deck ne sont pas détectables automatiquement. À confirmer lors de la discussion d'avant-partie.": "An estimate, not a verdict: two-card infinite combos and the deck's actual speed can't be detected automatically. Confirm it in your pregame conversation.",
   "🖌 Cartes personnalisées": "🖌 Custom cards",
   "Cartes personnalisées": "Custom cards",
   "Mes jetons personnalisés": "My custom tokens",
@@ -555,6 +580,126 @@ const TR = {
 
 function typeCat(tl) { tl = (tl || "").toLowerCase(); if (tl.includes("land") || tl.includes("terrain")) return "land"; if (tl.includes("creature") || tl.includes("créature")) return "creature"; return "other"; }
 
+/* ---------- estimation du « bracket » Commander ----------
+   Système officiel (beta) du Commander Format Panel : 5 paliers, de 1 (Exhibition)
+   à 5 (cEDH). Le repère le plus fiable est le nombre de « Game Changers » —
+   Scryfall nous le donne carte par carte, donc la liste officielle reste à jour
+   sans qu'on la recopie ici.
+
+   Ce qu'on sait mesurer      : Game Changers, tours supplémentaires, destruction
+                                massive de terrains, tuteurs, cartes illégales.
+   Ce qu'on ne sait PAS voir  : les combos infinis en deux cartes, la vitesse
+                                réelle du deck, la synergie. L'estimation est donc
+                                une fourchette, à confirmer par la discussion.  */
+const RE_EXTRA_TURN = /take an extra turn/i;
+const RE_MLD = /destroy all lands|each player sacrifices?[^.]{0,40}lands?/i;
+const RE_TUTOR = /search your library for a/i;
+/* la rampe de terrains de base (Cultivate, Rampant Growth…) n'est pas un tuteur */
+const RE_BASIC_RAMP = /search your library for (a |up to \w+ )?basic land/i;
+const MLD_NAMES = new Set(["Armageddon", "Ravages of War", "Catastrophe", "Jokulhaups", "Obliterate",
+  "Decree of Annihilation", "Cataclysm", "Impending Disaster", "Wildfire", "Burning of Xinye", "Death Cloud"]);
+
+const BRACKETS = { 1: "Exhibition", 2: "Core", 3: "Upgraded", 4: "Optimized", 5: "cEDH" };
+
+/* ---------- combos en deux cartes (Commander Spellbook) ----------
+   Critère officiel que l'analyse locale ne sait pas voir. On interroge l'API
+   publique « find-my-combos ». Le schéma exact n'est pas garanti dans le temps,
+   donc TOUTE la lecture de la réponse est défensive : à la moindre surprise on
+   renvoie « non vérifié » et l'estimation retombe sur les critères locaux.
+   Nécessite d'autoriser backend.commanderspellbook.com dans la CSP (server.js). */
+const SPELLBOOK_URL = "https://backend.commanderspellbook.com/find-my-combos";
+const RE_INFINITE = /infinite|win the game|wins the game|arbitrarily large/i;
+
+const cardNamesOf = (v) => {
+  const raw = v && (v.uses || v.cards || []);
+  return raw.map((u) => (u && ((u.card && u.card.name) || u.name)) || null).filter(Boolean);
+};
+const producesText = (v) => {
+  const raw = (v && (v.produces || v.features)) || [];
+  return raw.map((p) => (p && ((p.feature && p.feature.name) || p.name)) || "").join(" · ");
+};
+
+async function fetchCombos(list, commanders, imgs) {
+  try {
+    const cmdSet = new Set(commanders.map((n) => n.toLowerCase()));
+    const body = {
+      commanders: commanders.map((n) => ({ card: n })),
+      main: list.filter((l) => !cmdSet.has(l.name.toLowerCase())).map((l) => ({ card: l.name, quantity: l.count })),
+    };
+    const r = await fetch(SPELLBOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) return { ok: false, combos: [] };
+    const j = await r.json();
+    const res = j.results || j;
+    /* « absent » n'est pas « vide » : si la clé attendue manque (schéma modifié),
+       on doit répondre « non vérifié », surtout pas « zéro combo » — sinon on
+       resserrerait le bracket à tort. */
+    const inc = Array.isArray(res.included) ? res.included
+      : (Array.isArray(res.includes) ? res.includes : null);
+    if (!inc) return { ok: false, combos: [] };
+
+    const out = [];
+    for (const v of inc) {
+      // un combo « en deux cartes » n'utilise que deux cartes et aucun substitut générique
+      if (v && Array.isArray(v.requires) && v.requires.length) continue;
+      const names = cardNamesOf(v);
+      if (names.length !== 2) continue;
+      const txt = producesText(v);
+      let mv = 0, known = true;
+      for (const n of names) {
+        const e = imgs[n.toLowerCase()];
+        if (!e || typeof e.cmc !== "number") { known = false; break; }
+        mv += e.cmc;
+      }
+      out.push({ cards: names, produces: txt, infinite: RE_INFINITE.test(txt), mv: known ? mv : null });
+    }
+    return { ok: true, combos: out };
+  } catch (e) {
+    return { ok: false, combos: [] }; // réseau coupé, CSP, schéma inattendu…
+  }
+}
+
+function estimateBracket(list, imgs, combo) {
+  if (!list || !imgs) return null;
+  const gc = [], xt = [], mld = [], illegal = [];
+  let tutors = 0, unknown = 0;
+  for (const l of list) {
+    const e = imgs[l.name.toLowerCase()];
+    if (!e) { unknown++; continue; }
+    if (e.custom) continue; // carte perso : aucune donnée officielle
+    if (e.gc) gc.push(l.name);
+    if (e.xt) xt.push(l.name);
+    if (e.mld) mld.push(l.name);
+    if (e.tut) tutors += l.count;
+    if (e.legal) illegal.push(l.name);
+  }
+
+  /* Combos infinis en deux cartes : aucun en bracket 1-2 ; le bracket 3 n'interdit
+     que les combos « précoces » (valeur de mana cumulée ≤ 7) ; libre au-delà. */
+  const verified = !!(combo && combo.ok);
+  const twoCard = verified ? combo.combos.filter((c) => c.infinite) : [];
+  const early = twoCard.filter((c) => c.mv != null && c.mv <= 7);
+
+  /* Chaque critère impose un plancher ; on retient le plus haut. */
+  let floor = 2;
+  if (gc.length >= 4) floor = Math.max(floor, 4);
+  else if (gc.length >= 1) floor = Math.max(floor, 3);
+  if (mld.length > 0) floor = Math.max(floor, 4);   // règle dure
+  if (xt.length >= 2) floor = Math.max(floor, 3);
+  if (early.length > 0) floor = Math.max(floor, 4);
+  else if (twoCard.length > 0) floor = Math.max(floor, 3);
+
+  /* Plafond : ce qu'on ne mesure pas (vitesse réelle, synergie) laisse une marge.
+     Quand les combos sont vérifiés et qu'aucun critère ne pousse plus haut, le
+     bracket 3 devient une réponse ferme selon les critères de cartes. */
+  let ceil;
+  if (floor >= 4) ceil = 5;                                   // 4 et 5 se distinguent au jeu, pas à la liste
+  else if (floor === 3) ceil = verified && gc.length <= 3 && !mld.length && !early.length ? 3 : 4;
+  else ceil = 3;                                              // 0 critère dur : reste la vitesse du deck
+
+  return { min: floor, max: ceil, gc, xt, mld, illegal, tutors, unknown,
+    verified, combos: twoCard, early: early.length };
+}
+
 async function fetchScryfall(names, onProgress, lang = "fr") {
   const uniq = [...new Set(names)];
   const imgs = {}; let ok = true;
@@ -570,6 +715,16 @@ async function fetchScryfall(names, onProgress, lang = "fr") {
       for (const c of data.data || []) {
         const iu = c.image_uris || (c.card_faces && c.card_faces[0].image_uris) || null;
         const e = { s: iu ? iu.small : null, n: iu ? iu.normal : null, t: typeCat(c.type_line) };
+        /* Signaux servant à estimer le « bracket » Commander. `game_changer` est
+           fourni directement par Scryfall : la liste officielle reste donc à jour
+           toute seule, sans qu'on la fige dans le code. */
+        const oracle = c.oracle_text || (c.card_faces ? c.card_faces.map((f) => f.oracle_text || "").join(" ") : "");
+        if (typeof c.cmc === "number") e.cmc = c.cmc; // sert à juger si un combo est « précoce »
+        if (c.game_changer) e.gc = true;
+        if (c.legalities && c.legalities.commander && c.legalities.commander !== "legal") e.legal = c.legalities.commander;
+        if (RE_EXTRA_TURN.test(oracle)) e.xt = true;
+        if (RE_MLD.test(oracle) || MLD_NAMES.has(c.name)) e.mld = true;
+        if (RE_TUTOR.test(oracle) && !RE_BASIC_RAMP.test(oracle)) e.tut = true;
         /* Cartes recto-verso (transform, modal_dfc, jetons double face…) : elles n'ont
            PAS d'image_uris à la racine, mais deux faces qui ont chacune la leur.
            Les cartes « split / adventure / flip » ont bien image_uris à la racine :
@@ -764,6 +919,17 @@ a.btn{text-decoration:none; display:inline-flex; align-items:center; gap:4px;}
 .mchip{padding:2px 7px; border-radius:9px; font-size:10.5px; line-height:1.5; cursor:pointer;
   background:rgba(255,255,255,.05); color:var(--ink); border:1px solid var(--line2); white-space:nowrap;}
 .mchip:hover{border-color:var(--gold); color:var(--gold);}
+/* panneau d'estimation du bracket Commander */
+.brk{border:1px solid var(--gold2); border-radius:11px; padding:10px 12px; margin:10px 0; background:rgba(211,171,78,.05);}
+.brk-h{display:flex; align-items:center; gap:9px; flex-wrap:wrap;}
+.brk-n{font-family:'Cinzel',Georgia,serif; font-weight:700; font-size:19px; color:var(--gold); line-height:1;}
+.brk-l{font-size:12px; color:var(--ink);}
+.brk-sig{display:flex; flex-wrap:wrap; gap:5px; margin-top:8px;}
+.brk-tag{font-size:10.5px; padding:2px 7px; border-radius:9px; border:1px solid var(--line2); color:var(--dim); white-space:nowrap;}
+.brk-tag.hot{border-color:var(--gold); color:var(--gold);}
+.brk-tag.bad{border-color:var(--red); color:#e0a090;}
+.brk-list{margin-top:8px; font-size:11.5px; color:var(--dim); line-height:1.55;}
+.brk-list b{color:var(--ink); font-weight:600;}
 /* la regle .menu button force display:block/width:100% : on la neutralise ici */
 .menu .mchip{display:inline-flex; width:auto; text-align:center; padding:2px 7px;}
 .att-target{outline:2px dashed var(--gold); outline-offset:3px; border-radius:8px; cursor:crosshair; animation:pulse 1.4s infinite;}
@@ -1135,6 +1301,16 @@ function DeckBuilder({ onSave, onClose, existing }) {
   const [busy, setBusy] = useState(false);
   const [prog, setProg] = useState(0);
   const [warn, setWarn] = useState("");
+  const [combo, setCombo] = useState(null);              // { ok, combos[] } ou null
+  const [comboState, setComboState] = useState("idle");  // idle | loading | ok | error | off
+  const [useCombo, setUseCombo] = useState(true);        // interrogation de Commander Spellbook
+  /* Relance l'analyse une fois les commandants désignés (l'identité colorée compte). */
+  const reanalyse = async () => {
+    if (!parsed) return;
+    setComboState("loading");
+    const res = await fetchCombos(parsed, cmdrs, imgs);
+    setCombo(res); setComboState(res.ok ? "ok" : "error");
+  };
 
   const doImport = async () => {
     const list = parseDecklist(text);
@@ -1158,9 +1334,18 @@ function DeckBuilder({ onSave, onClose, existing }) {
     const missing = toFetch.length && Object.keys(im).length === custUsed.length;
     if (!ok || missing) setWarn(t("Images indisponibles (réseau bloqué ?) — le deck fonctionnera avec des cartes textuelles."));
     setCmdrs((c) => c.filter((n) => list.some((l) => l.name === n)));
+    /* Analyse des combos en deux cartes (critère officiel que Scryfall ne donne pas). */
+    if (useCombo) {
+      setComboState("loading");
+      const cmds = cmdrs.filter((n) => list.some((l) => l.name === n));
+      const res = await fetchCombos(list, cmds, im);
+      setCombo(res); setComboState(res.ok ? "ok" : "error");
+    } else { setCombo(null); setComboState("off"); }
   };
 
   const total = parsed ? parsed.reduce((s, l) => s + l.count, 0) : 0;
+  const est = useMemo(() => estimateBracket(parsed, imgs, combo), [parsed, imgs, combo]);
+  const [estOpen, setEstOpen] = useState(false);
   const toggleCmdr = (n) => setCmdrs((c) => c.includes(n) ? c.filter((x) => x !== n) : c.length >= 2 ? c : [...c, n]);
 
   return (
@@ -1182,7 +1367,7 @@ function DeckBuilder({ onSave, onClose, existing }) {
         {warn && <div style={{ color: "#e0a090", fontSize: 12, marginBottom: 8 }}>{warn}</div>}
         {existing && !busy && (
           <div className="hint" style={{ marginBottom: 8 }}>
-            {t("Deck importé avant la prise en charge du recto-verso ? Recliquez sur « Importer les cartes » pour récupérer les faces arrière.")}
+            {t("Deck importé avec une version plus ancienne ? Recliquez sur « Importer les cartes » pour récupérer les faces arrière et l'estimation du bracket.")}
           </div>
         )}
         {parsed && (
@@ -1206,10 +1391,77 @@ function DeckBuilder({ onSave, onClose, existing }) {
           </div>
         )}
         {parsed && lang === "fr" && <div className="hint" style={{ marginTop: 6 }}>{t("Les cartes jamais imprimées en français restent en anglais.")}</div>}
+
+        {/* ---- estimation du bracket Commander ---- */}
+        {est && (
+          <div className="brk">
+            <div className="brk-h">
+              <span className="brk-n">{est.min === est.max ? est.min : `${est.min}–${est.max}`}</span>
+              <span className="brk-l">
+                <b>{t("Bracket estimé")}</b> · {BRACKETS[est.min]}{est.max !== est.min ? ` → ${BRACKETS[est.max]}` : ""}
+              </span>
+              <button className="btn ghost" style={{ marginLeft: "auto", padding: "3px 9px", fontSize: 11 }}
+                onClick={() => setEstOpen((v) => !v)}>{estOpen ? t("Masquer le détail") : t("Voir le détail")}</button>
+            </div>
+
+            <div className="brk-sig">
+              <span className={"brk-tag" + (est.gc.length ? " hot" : "")}>{est.gc.length} Game Changer{est.gc.length > 1 ? "s" : ""}</span>
+              {comboState === "loading" && <span className="brk-tag">{t("analyse des combos…")}</span>}
+              {est.verified && <span className={"brk-tag" + (est.combos.length ? " hot" : "")}>{est.combos.length} {t("combo(s) infini(s) 2 cartes")}{est.early > 0 ? ` · ${est.early} ${t("précoce(s)")}` : ""}</span>}
+              {comboState === "error" && <span className="brk-tag bad">{t("combos non vérifiés")}</span>}
+              {est.xt.length > 0 && <span className={"brk-tag" + (est.xt.length >= 2 ? " hot" : "")}>{est.xt.length} {t("tour(s) supplémentaire(s)")}</span>}
+              {est.mld.length > 0 && <span className="brk-tag hot">{est.mld.length} {t("destruction de terrains")}</span>}
+              {est.tutors > 0 && <span className="brk-tag">{est.tutors} {t("tuteur(s)")}</span>}
+              {est.illegal.length > 0 && <span className="brk-tag bad">{est.illegal.length} {t("carte(s) non légale(s)")}</span>}
+              {est.unknown > 0 && <span className="brk-tag">{est.unknown} {t("carte(s) non identifiée(s)")}</span>}
+            </div>
+
+            {estOpen && (
+              <div className="brk-list">
+                {est.gc.length > 0 && <div><b>Game Changers :</b> {est.gc.join(", ")}</div>}
+                {est.combos.length > 0 && (
+                  <div style={{ marginTop: 4 }}>
+                    <b>{t("Combos infinis en deux cartes")} :</b>
+                    {est.combos.map((c, i) => (
+                      <div key={i} style={{ paddingLeft: 8 }}>
+                        • {c.cards.join(" + ")}
+                        {c.mv != null && <span style={{ color: c.mv <= 7 ? "var(--gold)" : "var(--dim)" }}> — {t("VM cumulée")} {c.mv}{c.mv <= 7 ? ` (${t("précoce")})` : ""}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {est.xt.length > 0 && <div><b>{t("Tours supplémentaires")} :</b> {est.xt.join(", ")}</div>}
+                {est.mld.length > 0 && <div><b>{t("Destruction massive de terrains")} :</b> {est.mld.join(", ")}</div>}
+                {est.illegal.length > 0 && <div style={{ color: "#e0a090" }}><b>{t("Non légales en Commander")} :</b> {est.illegal.join(", ")}</div>}
+                <div style={{ marginTop: 6 }}>
+                  {t("Règle officielle : aucun Game Changer en bracket 1-2, jusqu'à 3 en bracket 3, illimité en 4-5.")}{" "}
+                  {t("Aucun combo infini en deux cartes en bracket 1-2 ; en bracket 3 seuls les combos précoces (valeur de mana cumulée ≤ 7) sont exclus.")}
+                </div>
+                <div className="row" style={{ gap: 6, marginTop: 8 }}>
+                  <button className="btn ghost" style={{ padding: "3px 9px", fontSize: 11 }} disabled={comboState === "loading"} onClick={reanalyse}>
+                    {t("Ré-analyser les combos")}
+                  </button>
+                  <label className="row" style={{ gap: 5, fontSize: 11, cursor: "pointer" }}>
+                    <input type="checkbox" checked={useCombo} onChange={(e) => setUseCombo(e.target.checked)} />
+                    {t("Interroger Commander Spellbook à l'import")}
+                  </label>
+                </div>
+              </div>
+            )}
+
+            <div className="hint" style={{ marginTop: 8 }}>
+              {est.verified
+                ? t("Combos vérifiés via Commander Spellbook. Restent hors de portée : la vitesse réelle du deck et sa synergie. À confirmer lors de la discussion d'avant-partie.")
+                : t("Estimation, pas un verdict : les combos infinis en deux cartes et la vitesse réelle du deck ne sont pas détectables automatiquement. À confirmer lors de la discussion d'avant-partie.")}
+            </div>
+          </div>
+        )}
+
         <div className="row" style={{ marginTop: 14, justifyContent: "flex-end" }}>
           <button className="btn ghost" onClick={onClose}>{t("Annuler")}</button>
           <button className="btn gold" disabled={!parsed || !name.trim() || cmdrs.length === 0}
-            onClick={() => onSave({ id: existing ? existing.id : uid(), name: name.trim(), list: parsed, imgs, arts, commanders: cmdrs, lang })}>
+            onClick={() => onSave({ id: existing ? existing.id : uid(), name: name.trim(), list: parsed, imgs, arts, commanders: cmdrs, lang,
+              bracket: est ? { min: est.min, max: est.max, gc: est.gc.length, combos: est.combos.length, verified: est.verified } : null })}>
             {t("Enregistrer le deck")}
           </button>
         </div>
@@ -1308,7 +1560,7 @@ function Lobby({ onStart, uiLang, onLang }) {
                   {im && (im.frs || im.s) ? <img src={im.frs || im.s} alt="" /> : <div className="card-i" style={{ width: 52, height: 73, flex: "none" }}><div className="card-txt">{d.commanders[0]}</div></div>}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 700 }}>{d.name}</div>
-                    <div className="hint" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>★ {cn.join(" & ")} · {n} {t("cartes")}{d.lang === "fr" ? " · FR" : ""}</div>
+                    <div className="hint" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>★ {cn.join(" & ")} · {n} {t("cartes")}{d.lang === "fr" ? " · FR" : ""}{d.bracket ? ` · ${t("bracket")} ${d.bracket.min === d.bracket.max ? d.bracket.min : `${d.bracket.min}–${d.bracket.max}`}` : ""}</div>
                   </div>
                   <button className="btn ghost" onClick={(e) => { e.stopPropagation(); setEditDeck(d); setBuilder(true); }}>✎</button>
                   <button className="btn ghost danger" onClick={(e) => { e.stopPropagation(); if (confirmDel === d.id) { const nl = decks.filter((x) => x.id !== d.id); saveDecks(nl); if (selDeck && selDeck.id === d.id) setSelDeck(null); setConfirmDel(null); } else setConfirmDel(d.id); }}>{confirmDel === d.id ? t("Sûr ?") : "✕"}</button>

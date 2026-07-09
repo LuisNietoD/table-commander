@@ -78,7 +78,7 @@ const SEC_HEADERS = {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src https://fonts.gstatic.com",
     "img-src 'self' https: data: blob:",
-    "connect-src 'self' https://api.scryfall.com https://cards.scryfall.io",
+    "connect-src 'self' https://api.scryfall.com https://cards.scryfall.io https://backend.commanderspellbook.com",
     "media-src 'self' blob:",
     "object-src 'none'",
     "base-uri 'self'",
