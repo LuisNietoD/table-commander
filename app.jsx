@@ -79,6 +79,84 @@ function useWidth(ref, ready = true) {
   return w;
 }
 
+/* ---------- cartes personnalisées ---------- */
+/* La bibliothèque perso vit dans localStorage (persistante, propre au navigateur).
+   Les images UPLOADÉES sont trop lourdes pour voyager dans l'état de partie
+   (le serveur plafonne une valeur du KV à 512 Ko) : on les publie donc sur une
+   clé dédiée « cust.<id> », et la carte ne transporte qu'un identifiant court.
+   Une image donnée par URL, elle, tient dans la carte telle quelle. */
+const CUST_KEY = "mtg-custom";
+const CUSTOM_IMG = {};   // id -> dataURL résolue (undefined = pas encore tentée, null = absente)
+const custPending = {};  // id -> promesse en cours, pour ne pas requêter deux fois
+
+const loadCustom = async () => (await sget(CUST_KEY)) || [];
+const saveCustom = async (list) => sset(CUST_KEY, list);
+const newCustomId = () => "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+/* ajoute ou met à jour une carte perso : publie son image puis enregistre.
+   Utilisé aussi bien par l'accueil que par la fenêtre « Créer un jeton ». */
+async function upsertCustom(entry) {
+  const list = await loadCustom();
+  const next = list.some((c) => c.id === entry.id) ? list.map((c) => (c.id === entry.id ? entry : c)) : [...list, entry];
+  if (entry.data) await publishCustom(entry);
+  await saveCustom(next);
+  return next;
+}
+async function removeCustom(id) {
+  const next = (await loadCustom()).filter((c) => c.id !== id);
+  await saveCustom(next);
+  return next;
+}
+/* carte perso -> charge utile attendue par spawnToken */
+const custToTk = (c) => ({ id: c.id, name: c.name, fn: c.fn || null, s: c.url || null, n: c.url || null,
+  cust: c.data ? c.id : null, t: c.t || "creature", pt: c.pt || null, type: c.t || "creature" });
+
+/* publie (ou rafraîchit) l'image d'une carte perso pour les autres joueurs */
+async function publishCustom(c) {
+  if (!c || !c.data) return;
+  CUSTOM_IMG[c.id] = c.data;
+  await sset("cust." + c.id, { d: c.data }, true);
+}
+/* récupère l'image d'une carte perso créée par un autre joueur */
+async function resolveCustom(id) {
+  if (CUSTOM_IMG[id] !== undefined) return CUSTOM_IMG[id];
+  if (!custPending[id]) {
+    custPending[id] = sget("cust." + id, true).then((v) => {
+      CUSTOM_IMG[id] = (v && v.d) || null;
+      return CUSTOM_IMG[id];
+    });
+  }
+  return custPending[id];
+}
+
+/* Redimensionne une image choisie par l'utilisateur vers un format de carte
+   raisonnable, puis l'encode en JPEG. On baisse la qualité tant que la donnée
+   dépasse la limite du serveur, pour ne jamais produire une carte impubliable. */
+const CUST_MAX_BYTES = 420 * 1024; // marge sous les 512 Ko du serveur
+function fileToDataURL(file, maxW = 488) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error("lecture impossible"));
+    fr.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("image illisible"));
+      img.onload = () => {
+        const w = Math.min(maxW, img.width || maxW);
+        const h = Math.round(w * (img.height && img.width ? img.height / img.width : 1.4));
+        const cv = document.createElement("canvas");
+        cv.width = w; cv.height = h;
+        cv.getContext("2d").drawImage(img, 0, 0, w, h);
+        let q = 0.85, url = cv.toDataURL("image/jpeg", q);
+        while (url.length > CUST_MAX_BYTES && q > 0.3) { q -= 0.12; url = cv.toDataURL("image/jpeg", q); }
+        if (url.length > CUST_MAX_BYTES) reject(new Error("image trop lourde"));
+        else resolve(url);
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+
 /* ---------- import de deck ---------- */
 function parseDecklist(text) {
   const lines = text.split(/\r?\n/); const out = [];
@@ -96,9 +174,19 @@ function parseDecklist(text) {
 
 /* nom affiché : tient compte de la face visible pour les cartes recto-verso */
 const dn = (c) => (c && (c.flipped ? (c.bfn || c.bname || c.fn || c.name) : (c.fn || c.name))) || "";
-/* images de la face actuellement visible (petite et grande) */
-const fimg = (c) => (c && c.flipped && c.bimg) ? c.bimg : (c && c.img) || null;
-const fimgN = (c) => (c && c.flipped && (c.bimgN || c.bimg)) ? (c.bimgN || c.bimg) : (c && (c.imgN || c.img)) || null;
+/* images de la face actuellement visible (petite et grande).
+   Une carte perso à image uploadée porte `cust` : on lit le cache CUSTOM_IMG. */
+const custImg = (c) => (c && c.cust && CUSTOM_IMG[c.cust]) || null;
+const fimg = (c) => {
+  if (!c) return null;
+  if (c.flipped && c.bimg) return c.bimg;
+  return custImg(c) || c.img || null;
+};
+const fimgN = (c) => {
+  if (!c) return null;
+  if (c.flipped && (c.bimgN || c.bimg)) return c.bimgN || c.bimg;
+  return custImg(c) || c.imgN || c.img || null;
+};
 
 /* Marqueurs +1/+1 : `counters` est un entier SIGNÉ. Positif = marqueurs +1/+1,
    négatif = marqueurs -1/-1. Les deux s'annulent donc naturellement (règle 704.5q).
@@ -396,6 +484,34 @@ const TR = {
   "Simulateur manuel pour 2 à 6 joueurs · vous résolvez les effets vous-mêmes, comme sur une vraie table": "Manual simulator for 2–6 players · you resolve effects yourselves, just like at a real table",
   "Modifier le deck": "Edit deck",
   "Nouveau deck": "New deck",
+  "🖌 Cartes personnalisées": "🖌 Custom cards",
+  "Cartes personnalisées": "Custom cards",
+  "Mes jetons personnalisés": "My custom tokens",
+  "Créer un jeton personnalisé (avec image)": "Create a custom token (with image)",
+  "Nom (ex. Banana)": "Name (e.g. Banana)",
+  "F/E": "P/T",
+  "Nom français (facultatif)": "Display name (optional)",
+  "Créer et poser sur le plateau": "Create and put on the battlefield",
+  "Enregistrer seulement": "Save only",
+  "Supprimer de mes jetons": "Remove from my tokens",
+  "Le jeton est ajouté à vos cartes personnalisées et son image est partagée avec les autres joueurs.": "The token is added to your custom cards and its image is shared with the other players.",
+  "Pour les jetons inventés et les cartes maison. Un fichier image est réduit puis partagé avec les autres joueurs ; un lien https est utilisé tel quel.": "For homebrew tokens and custom cards. An uploaded image is downscaled then shared with the other players; an https link is used as-is.",
+  "Nom (celui utilisé dans les listes de deck) — ex. Banana": "Name (the one used in decklists) — e.g. Banana",
+  "Nom affiché en français (facultatif) — ex. Banane": "Display name (optional)",
+  "Autre (artefact, sort…)": "Other (artifact, spell…)",
+  "C'est un jeton (apparaît dans la fenêtre « Créer un jeton »)": "It's a token (appears in the “Create a token” window)",
+  "…ou un lien https vers une image": "…or an https link to an image",
+  "+ Ajouter la carte": "+ Add the card",
+  "Aucune carte personnalisée pour l'instant.": "No custom cards yet.",
+  "Image refusée : essayez une image plus petite ou moins détaillée.": "Image rejected: try a smaller or simpler image.",
+  "Donnez un nom à la carte.": "Give the card a name.",
+  "Ajoutez une image (fichier ou lien).": "Add an image (file or link).",
+  "Traitement…": "Processing…",
+  "Chargement…": "Loading…",
+  "Retirer": "Remove",
+  "aperçu": "preview",
+  "Créature": "Creature",
+  "Terrain": "Land",
   "Collez votre liste (export Moxfield, Archidekt, EDHREC…) : une carte par ligne, ex. « 1 Sol Ring ».": "Paste your list (Moxfield, Archidekt, EDHREC export…): one card per line, e.g. “1 Sol Ring”.",
   "Nom du deck": "Deck name",
   "Cartes en :": "Cards in:",
@@ -502,6 +618,8 @@ function buildInstances(deck) {
                            : { s: im.frbs || im.bs, n: im.frbn || im.bn, fn: im.frb || null }) : null;
     return { id: uid(), name, fn: ov ? (ov.fn || null) : (im.fr || null),
       img: ov ? ov.s : (im.frs || im.s || null), imgN: ov ? ov.n : (im.frn || im.n || null),
+      ...(im.cust ? { cust: im.cust } : {}),   // carte perso à image uploadée
+      ...(im.pt ? { pt: im.pt } : {}),
       ...(dfc ? { dfc: true, flipped: false, bimg: back.s || null, bimgN: back.n || null,
                   bfn: back.fn, bname: im.bname || null,
                   ft: im.ft || t, bt: im.bt || t } : {}),
@@ -549,8 +667,16 @@ body{margin:0; overflow:hidden; background:var(--felt); color:var(--ink);
 @keyframes atkpulse{0%,100%{box-shadow:0 0 0 2px rgba(193,79,55,.45), 0 0 12px rgba(240,120,90,.4);}
   50%{box-shadow:0 0 0 2px rgba(193,79,55,.75), 0 0 22px rgba(240,120,90,.8);}}
 .btn:disabled{opacity:.4; cursor:not-allowed;}
-input,textarea{background:#0d1c1f; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:9px 11px; font:inherit; outline:none; width:100%; user-select:text;}
-input:focus,textarea:focus{border-color:var(--gold);}
+input,textarea,select{background:#0d1c1f; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:9px 11px; font:inherit; outline:none; width:100%; user-select:text;}
+input:focus,textarea:focus,select:focus{border-color:var(--gold);}
+/* la case à cocher et le champ fichier ne doivent pas hériter du style « champ texte » */
+input[type=checkbox]{width:auto; padding:0; accent-color:var(--gold); cursor:pointer;}
+input[type=file]{padding:6px 8px; cursor:pointer;}
+input[type=file]::file-selector-button{background:var(--panel2); color:var(--ink); border:1px solid var(--line);
+  border-radius:6px; padding:4px 9px; margin-right:8px; cursor:pointer; font:inherit; font-size:11px;}
+input[type=file]::file-selector-button:hover{border-color:var(--gold); color:#fff;}
+input:disabled{opacity:.45; cursor:not-allowed;}
+select option{background:#0d1c1f; color:var(--ink);}
 .pips{display:flex; gap:7px; justify-content:center;}
 .pip{width:9px;height:9px;border-radius:50%; box-shadow:0 0 8px currentColor;}
 .hint{font-size:11px; color:var(--dim);}
@@ -859,6 +985,126 @@ function Card({ card, w = 76, mine = true, zone, onTap, onMenu, onHover, onTrans
 }
 
 /* ---------- constructeur de deck ---------- */
+/* Gestionnaire de cartes personnalisées : jetons inventés, proxies, cartes maison.
+   L'image vient d'un fichier (redimensionné puis publié pour les autres joueurs)
+   ou d'une URL directe (utilisée telle quelle, rien à publier). */
+function CustomCards({ close }) {
+  const [list, setList] = useState(null);
+  const [name, setName] = useState("");
+  const [fn, setFn] = useState("");
+  const [type, setType] = useState("other");
+  const [pt, setPt] = useState("");
+  const [token, setToken] = useState(true);
+  const [url, setUrl] = useState("");
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [editId, setEditId] = useState(null);
+  const fileRef = useRef(null);
+
+  useEffect(() => { (async () => setList(await loadCustom()))(); }, []);
+
+  const reset = () => { setName(""); setFn(""); setType("other"); setPt(""); setToken(true); setUrl(""); setData(null); setEditId(null); setErr(""); if (fileRef.current) fileRef.current.value = ""; };
+
+  const onFile = async (e) => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    setErr(""); setBusy(true);
+    try { setData(await fileToDataURL(f)); setUrl(""); }
+    catch (ex) { setErr(t("Image refusée : essayez une image plus petite ou moins détaillée.")); }
+    setBusy(false);
+  };
+
+  const save = async () => {
+    const nm = name.trim();
+    if (!nm) { setErr(t("Donnez un nom à la carte.")); return; }
+    if (!data && !url.trim()) { setErr(t("Ajoutez une image (fichier ou lien).")); return; }
+    setBusy(true); setErr("");
+    const entry = { id: editId || newCustomId(),
+      name: nm, fn: fn.trim() || null, t: type, pt: pt.trim() || null, token,
+      url: data ? null : url.trim(), data: data || null };
+    setList(await upsertCustom(entry));
+    reset(); setBusy(false);
+  };
+
+  const edit = (c) => { setEditId(c.id); setName(c.name); setFn(c.fn || ""); setType(c.t); setPt(c.pt || ""); setToken(!!c.token); setUrl(c.url || ""); setData(c.data || null); setErr(""); };
+  const del = async (c) => { setList(await removeCustom(c.id)); if (editId === c.id) reset(); };
+
+  const preview = data || url.trim() || null;
+  return (
+    <div className="modal-bg" onClick={close}>
+      <div className="modal" style={{ maxWidth: 720 }} onClick={(e) => e.stopPropagation()}>
+        <div className="row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
+          <h3 className="disp" style={{ margin: 0, fontSize: 14, color: "var(--gold)", textTransform: "none", letterSpacing: ".06em" }}>
+            🖌 {t("Cartes personnalisées")}
+          </h3>
+          <button className="btn ghost" onClick={close}>{t("Fermer ✕")}</button>
+        </div>
+
+        <div className="hint" style={{ marginBottom: 10 }}>
+          {t("Pour les jetons inventés et les cartes maison. Un fichier image est réduit puis partagé avec les autres joueurs ; un lien https est utilisé tel quel.")}
+        </div>
+
+        {/* ---- formulaire ---- */}
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-start", marginBottom: 12 }}>
+          <div className="card-i" style={{ width: 96, height: 134, flex: "none" }}>
+            {preview ? <img src={preview} alt="" /> : <div className="card-txt">{name || t("aperçu")}</div>}
+          </div>
+          <div style={{ flex: 1, minWidth: 240, display: "flex", flexDirection: "column", gap: 6 }}>
+            <input placeholder={t("Nom (celui utilisé dans les listes de deck) — ex. Banana")} value={name} onChange={(e) => setName(e.target.value)} />
+            <input placeholder={t("Nom affiché en français (facultatif) — ex. Banane")} value={fn} onChange={(e) => setFn(e.target.value)} />
+            <div className="row" style={{ gap: 6 }}>
+              <select value={type} onChange={(e) => setType(e.target.value)} style={{ flex: 1 }}>
+                <option value="creature">{t("Créature")}</option>
+                <option value="land">{t("Terrain")}</option>
+                <option value="other">{t("Autre (artefact, sort…)")}</option>
+              </select>
+              <input placeholder={t("F/E (ex. 2/2)")} value={pt} onChange={(e) => setPt(e.target.value)} style={{ width: 96 }} />
+            </div>
+            <label className="row" style={{ gap: 6, fontSize: 12.5, cursor: "pointer" }}>
+              <input type="checkbox" checked={token} onChange={(e) => setToken(e.target.checked)} />
+              {t("C'est un jeton (apparaît dans la fenêtre « Créer un jeton »)")}
+            </label>
+            <div className="row" style={{ gap: 6 }}>
+              <input type="file" accept="image/*" ref={fileRef} onChange={onFile} style={{ flex: 1, fontSize: 11 }} />
+              {data && <button className="btn ghost" onClick={() => { setData(null); if (fileRef.current) fileRef.current.value = ""; }}>{t("Retirer")}</button>}
+            </div>
+            <input placeholder={t("…ou un lien https vers une image")} value={url} disabled={!!data}
+              onChange={(e) => { setUrl(e.target.value); setData(null); }} />
+            {err && <div style={{ color: "#e0a090", fontSize: 12 }}>{err}</div>}
+            <div className="row" style={{ gap: 6 }}>
+              <button className="btn gold" onClick={save} disabled={busy}>{busy ? t("Traitement…") : (editId ? t("Enregistrer") : t("+ Ajouter la carte"))}</button>
+              {editId && <button className="btn ghost" onClick={reset}>{t("Annuler")}</button>}
+            </div>
+          </div>
+        </div>
+
+        {/* ---- bibliothèque ---- */}
+        {list === null && <div className="hint">{t("Chargement…")}</div>}
+        {list && list.length === 0 && <div className="hint">{t("Aucune carte personnalisée pour l'instant.")}</div>}
+        {list && list.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+            {list.map((c) => (
+              <div key={c.id} style={{ width: 104 }}>
+                <div className="card-i" style={{ height: 146 }}>
+                  {(c.data || c.url) ? <img src={c.data || c.url} alt={c.name} /> : <div className="card-txt">{c.name}</div>}
+                </div>
+                <div className="hint" style={{ marginTop: 3, textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {c.fn || c.name}{c.pt ? ` · ${c.pt}` : ""}{c.token ? " · 🪙" : ""}
+                </div>
+                <div className="row" style={{ gap: 4, marginTop: 3, justifyContent: "center" }}>
+                  <button className="btn ghost" style={{ padding: "2px 7px", fontSize: 10 }} onClick={() => edit(c)}>✎</button>
+                  <button className="btn ghost danger" style={{ padding: "2px 7px", fontSize: 10 }} onClick={() => del(c)}>🗑</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* Gestionnaire de decks */
 function DeckBuilder({ onSave, onClose, existing }) {
   const [name, setName] = useState(existing ? existing.name : "");
   const [text, setText] = useState(existing ? existing.list.map((l) => `${l.count} ${l.name}`).join("\n") : "");
@@ -876,9 +1122,23 @@ function DeckBuilder({ onSave, onClose, existing }) {
     const list = parseDecklist(text);
     if (!list.length) { setWarn(t("Aucune carte reconnue. Format attendu : « 1 Sol Ring » par ligne.")); return; }
     setBusy(true); setWarn(""); setProg(0);
-    const { imgs: im, ok } = await fetchScryfall(list.map((l) => l.name), setProg, lang);
-    setImgs(im); setParsed(list); setBusy(false);
-    if (!ok || Object.keys(im).length === 0) setWarn(t("Images indisponibles (réseau bloqué ?) — le deck fonctionnera avec des cartes textuelles."));
+    /* Les cartes personnalisées sont résolues localement : on les retire de la
+       requête Scryfall (qui ne les connaît pas) et on injecte leurs images. */
+    const custom = await loadCustom();
+    const byName = {};
+    for (const c of custom) { byName[c.name.toLowerCase()] = c; if (c.fn) byName[c.fn.toLowerCase()] = c; }
+    const custUsed = [], toFetch = [];
+    for (const l of list) { const c = byName[l.name.toLowerCase()]; if (c) custUsed.push(c); else toFetch.push(l.name); }
+    const { imgs: im, ok } = toFetch.length ? await fetchScryfall(toFetch, setProg, lang) : { imgs: {}, ok: true };
+    for (const c of custUsed) {
+      const e = { s: c.url || null, n: c.url || null, cust: c.data ? c.id : null, t: c.t || "other", fr: c.fn || null, pt: c.pt || null, custom: true };
+      im[c.name.toLowerCase()] = e;
+      if (c.fn) im[c.fn.toLowerCase()] = e;
+      if (c.data) await publishCustom(c); // partage l'image avec les autres joueurs
+    }
+    setImgs(im); setParsed(list); setBusy(false); setProg(1);
+    const missing = toFetch.length && Object.keys(im).length === custUsed.length;
+    if (!ok || missing) setWarn(t("Images indisponibles (réseau bloqué ?) — le deck fonctionnera avec des cartes textuelles."));
     setCmdrs((c) => c.filter((n) => list.some((l) => l.name === n)));
   };
 
@@ -912,7 +1172,7 @@ function DeckBuilder({ onSave, onClose, existing }) {
             {parsed.map((l, i) => {
               const im = imgs[l.name.toLowerCase()]; const isC = cmdrs.includes(l.name);
               const ov = arts[l.name.toLowerCase()];
-              const src = ov ? ov.s : (im && (im.frs || im.s)) || null;
+              const src = ov ? ov.s : (im && (im.frs || im.s || (im.cust && CUSTOM_IMG[im.cust]))) || null;
               return (
                 <div key={i} onClick={() => toggleCmdr(l.name)} style={{ width: 82, cursor: "pointer", position: "relative" }} title={im && im.fr ? im.fr : l.name}>
                   <div className={"card-i" + (isC ? " cmdr" : "")} style={{ height: 114 }}>
@@ -957,6 +1217,7 @@ function Lobby({ onStart, uiLang, onLang }) {
   const [decks, setDecks] = useState([]);
   const [selDeck, setSelDeck] = useState(null);
   const [builder, setBuilder] = useState(false);
+  const [custOpen, setCustOpen] = useState(false);
   const [editDeck, setEditDeck] = useState(null);
   const [joinCode, setJoinCode] = useState("");
   const [err, setErr] = useState("");
@@ -1039,6 +1300,7 @@ function Lobby({ onStart, uiLang, onLang }) {
             {decks.length === 0 && <div className="hint" style={{ padding: 12, textAlign: "center" }}>{t("Aucun deck enregistré — créez-en un ci-dessous. Vos decks sont sauvegardés pour les prochaines parties.")}</div>}
           </div>
           <button className="btn" style={{ marginTop: 10, width: "100%" }} onClick={() => { setEditDeck(null); setBuilder(true); }}>{t("+ Importer un deck")}</button>
+          <button className="btn ghost" style={{ marginTop: 6, width: "100%" }} onClick={() => setCustOpen(true)}>{t("🖌 Cartes personnalisées")}</button>
         </div>
 
         <div style={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 16, padding: 18, display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1063,6 +1325,7 @@ function Lobby({ onStart, uiLang, onLang }) {
         </div>
       </div>
 
+      {custOpen && <CustomCards close={() => setCustOpen(false)} />}
       {builder && <DeckBuilder existing={editDeck} onClose={() => setBuilder(false)}
         onSave={async (deck) => { const nl = editDeck ? decks.map((d) => (d.id === deck.id ? deck : d)) : [...decks, deck]; await saveDecks(nl); setSelDeck(deck); setBuilder(false); }} />}
       <div className="hint" style={{ textAlign: "center", marginTop: 26, fontSize: 10.5, lineHeight: 1.7, opacity: .85 }}>
@@ -1354,6 +1617,7 @@ const HELP_FR = [
   "⚔ <b>Mode attaque</b> : bouton ⚔ (rail droit). Cliquez vos créatures pour les déclarer attaquantes : elles s'engagent et gardent un <b>cadre rouge</b> jusqu'à ce que vous les dégagiez.",
   "👁 <b>Révéler</b> : ⋮ sur une carte de votre main → « Révéler à tous » — la carte s'affiche en grand chez tous les joueurs.",
   "🪦 <b>Cimetière / Exil</b> : la carte du dessus se <b>glisse</b> directement vers le champ, la main… Survolez un nom de carte dans le journal pour la revoir.",
+  "🖌 <b>Cartes personnalisées</b> : depuis l'accueil <i>ou</i> en pleine partie via « Créer un jeton », créez vos jetons inventés et cartes maison (image ou lien). Les jetons apparaissent dans « Créer un jeton » ; les autres se citent par leur nom dans une liste de deck.",
   "⛓ <b>Groupes</b> : « Créer un groupe » (rail droit) pose une carte-groupe colorée. ⋮ dessus → « Lier des cartes », puis cliquez les cartes concernées. Tout marqueur mis sur le groupe s'applique aussi à toutes ses cartes liées (pastille de couleur en haut des cartes).",
   "👁 <b>Survolez</b> n'importe quelle carte pour la lire en grand sur le côté gauche.",
   "🎲 Les dés, la pièce et chaque action sont inscrits dans le journal (rail droit), visible par les deux joueurs.",
@@ -1371,6 +1635,7 @@ const HELP_EN = [
   "⚔ <b>Attack mode</b>: ⚔ button (right rail). Click your creatures to declare them attackers: they tap and keep a <b>red outline</b> until you untap them.",
   "👁 <b>Reveal</b>: ⋮ on a card in your hand → “Reveal to everyone” — the card is shown large to every player.",
   "🪦 <b>Graveyard / Exile</b>: the top card can be <b>dragged</b> straight to the battlefield, your hand… Hover a card name in the log to see it again.",
+  "🖌 <b>Custom cards</b>: from the home screen <i>or</i> mid-game via “Create a token”, build your homebrew tokens and custom cards (image or link). Tokens show up in “Create a token”; the rest can be referenced by name in a decklist.",
   "⛓ <b>Groups</b>: “Create a group” (right rail) drops a colored group card. ⋮ on it → “Link cards”, then click the cards. Any counter put on the group also applies to all its linked cards (colored dot on top of the cards).",
   "👁 <b>Hover</b> any card to read it full-size on the left side.",
   "🎲 Dice, coin flips and every action are written to the log (right rail), visible to all players.",
@@ -1586,6 +1851,31 @@ function Game({ room, onQuit, uiLang, onLang }) {
     const all = [...(my.log || [])];
     for (const sx of Object.keys(opps)) all.push(...(opps[sx].log || []));
     return all.sort((a, b) => b.t - a.t).slice(0, 40);
+  }, [my, opps]);
+
+  /* Cartes personnalisées : on republie mes images au lancement (les clés du
+     serveur expirent après 48 h) et on récupère celles des autres joueurs. */
+  const [custTick, setCustTick] = useState(0);
+  useEffect(() => {
+    let stop = false;
+    (async () => {
+      const mine = await loadCustom();
+      let n = 0;
+      for (const c of mine) if (c.data) { await publishCustom(c); n++; }
+      // publishCustom remplit CUSTOM_IMG : il faut un rendu pour que les cartes s'affichent
+      if (n && !stop) setCustTick((v) => v + 1);
+    })();
+    return () => { stop = true; };
+  }, []);
+  useEffect(() => {
+    const ids = new Set();
+    const scan = (st) => { if (!st || !st.zones) return; for (const zn of Object.keys(st.zones)) for (const c of st.zones[zn]) if (c.cust) ids.add(c.cust); };
+    scan(my); for (const sx of Object.keys(opps)) scan(opps[sx]);
+    const missing = [...ids].filter((id) => CUSTOM_IMG[id] === undefined);
+    if (!missing.length) return;
+    let stop = false;
+    Promise.all(missing.map(resolveCustom)).then(() => { if (!stop) setCustTick((v) => v + 1); });
+    return () => { stop = true; };
   }, [my, opps]);
 
   /* Cartes révélées, à moi et aux adversaires. Une petite horloge fait expirer
@@ -1941,8 +2231,8 @@ function Game({ room, onQuit, uiLang, onLang }) {
     }
   };
 
-  const spawnToken = (tk) => setMy((s) => withLog({ ...s, zones: { ...s.zones, battlefield: [...s.zones.battlefield, { id: uid(), name: tk.name, fn: tk.fn || null, img: tk.s || null, imgN: tk.n || null, pt: tk.pt || null, t: tk.t || "creature", row: tk.t || "creature", host: null, tapped: false, faceDown: false, counters: 0, token: true }] } }, `${t("crée un jeton")} ${tk.fn || tk.name}${tk.pt ? " " + tk.pt : ""}`,
-    tk.s ? { n: tk.fn || tk.name, img: tk.s, imgN: tk.n || tk.s } : null));
+  const spawnToken = (tk) => setMy((s) => withLog({ ...s, zones: { ...s.zones, battlefield: [...s.zones.battlefield, { id: uid(), name: tk.name, fn: tk.fn || null, img: tk.s || null, imgN: tk.n || null, cust: tk.cust || null, pt: tk.pt || null, t: tk.t || "creature", row: tk.t || "creature", host: null, tapped: false, faceDown: false, counters: 0, token: true }] } }, `${t("crée un jeton")} ${tk.fn || tk.name}${tk.pt ? " " + tk.pt : ""}`,
+    (tk.s || (tk.cust && CUSTOM_IMG[tk.cust])) ? { n: tk.fn || tk.name, img: tk.s || CUSTOM_IMG[tk.cust], imgN: tk.n || CUSTOM_IMG[tk.cust] } : null));
 
   const spawnGroup = (name) => setMy((s) => {
     const used = s.zones.battlefield.filter((c) => c.grp).length;
@@ -2643,6 +2933,17 @@ const TOKEN_FR = {
   "traqueur": "Horror", "horreur": "Horror", "cauchemar": "Nightmare", "golem-de-chair": "Zombie",
   "pilier": "Wall", "mur": "Wall", "totem": "Totem", "fantassin": "Soldier", "eclaireur": "Scout",
   "archer": "Archer", "barde": "Bard", "rodeur": "Ranger", "paladin": "Knight",
+  // oublis fréquents
+  "banane": "Banana", "graine": "Seed", "fourmi": "Ant", "poulet": "Chicken", "vache": "Ox", "boeuf": "Ox",
+  "mouton": "Sheep", "lapin": "Rabbit", "souris": "Mouse", "taupe": "Mole", "hibou": "Bird",
+  "corbeau": "Bird", "faucon": "Bird", "aigle": "Bird", "phalene": "Moth", "ver": "Worm",
+  "limace": "Slug", "escargot": "Snail", "gelatine": "Jellyfish",
+  "sangsue": "Leech", "renne": "Elk", "chameau": "Camel", "yeti": "Yeti",
+  "minotaure": "Minotaur", "centaure": "Centaur", "satyre": "Satyr", "naga": "Naga",
+  "sirene": "Merfolk", "ondin": "Merfolk", "triton": "Merfolk", "gargouille": "Gargoyle",
+  "epouvantail": "Scarecrow", "automate": "Construct", "sentinelle": "Wall",
+  "revenant": "Zombie", "pillard": "Rogue", "brigand": "Rogue", "bandit": "Rogue",
+  "chasseur": "Ranger", "eclat": "Shard", "fragment": "Shard", "relique": "Relic",
 };
 
 function TokenPicker({ onSpawn, close, onHover }) {
@@ -2652,7 +2953,42 @@ function TokenPicker({ onSpawn, close, onHover }) {
   const [made, setMade] = useState({}); // id -> nombre créé
   const [cn, setCn] = useState("");   // jeton personnalisé : nom
   const [cpt, setCpt] = useState(""); // jeton personnalisé : F/E
+  const [mine, setMine] = useState([]); // mes cartes personnalisées marquées « jeton »
+  /* création d'un jeton perso sans quitter la partie (jeton oublié / inexistant) */
+  const [nOpen, setNOpen] = useState(false);
+  const [nName, setNName] = useState(""); const [nFn, setNFn] = useState("");
+  const [nPt, setNPt] = useState(""); const [nType, setNType] = useState("creature");
+  const [nUrl, setNUrl] = useState(""); const [nData, setNData] = useState(null);
+  const [nBusy, setNBusy] = useState(false); const [nErr, setNErr] = useState("");
+  const nFile = useRef(null);
   const tRef = useRef(null);
+  useEffect(() => { (async () => setMine((await loadCustom()).filter((c) => c.token)))(); }, []);
+
+  const nReset = () => { setNName(""); setNFn(""); setNPt(""); setNType("creature"); setNUrl(""); setNData(null); setNErr(""); if (nFile.current) nFile.current.value = ""; };
+  const nPick = async (e) => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    setNErr(""); setNBusy(true);
+    try { setNData(await fileToDataURL(f)); setNUrl(""); }
+    catch (ex) { setNErr(t("Image refusée : essayez une image plus petite ou moins détaillée.")); }
+    setNBusy(false);
+  };
+  /* enregistre le jeton dans la bibliothèque ET le crée tout de suite sur le plateau */
+  const nSave = async (spawnNow) => {
+    const nm = nName.trim();
+    if (!nm) { setNErr(t("Donnez un nom à la carte.")); return; }
+    if (!nData && !nUrl.trim()) { setNErr(t("Ajoutez une image (fichier ou lien).")); return; }
+    setNBusy(true); setNErr("");
+    const entry = { id: newCustomId(), name: nm, fn: nFn.trim() || null, t: nType, pt: nPt.trim() || null,
+      token: true, url: nData ? null : nUrl.trim(), data: nData || null };
+    const next = await upsertCustom(entry);
+    setMine(next.filter((c) => c.token));
+    if (spawnNow) pick(custToTk(entry));
+    nReset(); setNOpen(false); setNBusy(false);
+  };
+  const nDel = async (c) => { const next = await removeCustom(c.id); setMine(next.filter((x) => x.token)); };
+  /* mes jetons perso, filtrés par la recherche en cours (nom FR ou EN) */
+  const nq = norm(q);
+  const mineShown = nq ? mine.filter((c) => norm(c.name).includes(nq) || norm(c.fn || "").includes(nq)) : mine;
   const makeCustom = () => {
     const name = cn.trim(); if (!name) return;
     pick({ id: "txt-" + name.toLowerCase() + "-" + cpt.trim(), name, fn: name, s: null, n: null, t: "creature", pt: cpt.trim() || null });
@@ -2723,6 +3059,77 @@ function TokenPicker({ onSpawn, close, onHover }) {
             onKeyDown={(e) => { if (e.key === "Enter") makeCustom(); }} style={{ width: 100, flex: "none" }} />
           <button className="btn gold" style={{ flex: "none" }} onClick={makeCustom}>{t("Créer")}</button>
         </div>
+
+        {/* ---- créer un jeton perso en pleine partie (jeton inexistant sur Scryfall) ---- */}
+        <div style={{ marginBottom: 10 }}>
+          {!nOpen && (
+            <button className="btn ghost" style={{ width: "100%" }} onClick={() => setNOpen(true)}>
+              🖌 {t("Créer un jeton personnalisé (avec image)")}
+            </button>
+          )}
+          {nOpen && (
+            <div style={{ border: "1px solid var(--gold2)", borderRadius: 10, padding: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <div className="card-i" style={{ width: 82, height: 114, flex: "none" }}>
+                {(nData || nUrl.trim()) ? <img src={nData || nUrl.trim()} alt="" /> : <div className="card-txt">{nName || t("aperçu")}</div>}
+              </div>
+              <div style={{ flex: 1, minWidth: 230, display: "flex", flexDirection: "column", gap: 6 }}>
+                <div className="row" style={{ gap: 6 }}>
+                  <input autoFocus placeholder={t("Nom (ex. Banana)")} value={nName} onChange={(e) => setNName(e.target.value)} style={{ flex: 1, minWidth: 120 }} />
+                  <input placeholder={t("F/E")} value={nPt} onChange={(e) => setNPt(e.target.value)} style={{ width: 78, flex: "none" }} />
+                </div>
+                <div className="row" style={{ gap: 6 }}>
+                  <input placeholder={t("Nom français (facultatif)")} value={nFn} onChange={(e) => setNFn(e.target.value)} style={{ flex: 1, minWidth: 120 }} />
+                  <select value={nType} onChange={(e) => setNType(e.target.value)} style={{ width: 110, flex: "none" }}>
+                    <option value="creature">{t("Créature")}</option>
+                    <option value="land">{t("Terrain")}</option>
+                    <option value="other">{t("Autre (artefact, sort…)")}</option>
+                  </select>
+                </div>
+                <div className="row" style={{ gap: 6 }}>
+                  <input type="file" accept="image/*" ref={nFile} onChange={nPick} style={{ flex: 1, fontSize: 11 }} />
+                  {nData && <button className="btn ghost" style={{ flex: "none" }} onClick={() => { setNData(null); if (nFile.current) nFile.current.value = ""; }}>{t("Retirer")}</button>}
+                </div>
+                <input placeholder={t("…ou un lien https vers une image")} value={nUrl} disabled={!!nData}
+                  onChange={(e) => { setNUrl(e.target.value); setNData(null); }} />
+                {nErr && <div style={{ color: "#e0a090", fontSize: 12 }}>{nErr}</div>}
+                <div className="row" style={{ gap: 6 }}>
+                  <button className="btn gold" disabled={nBusy} onClick={() => nSave(true)}>{nBusy ? t("Traitement…") : t("Créer et poser sur le plateau")}</button>
+                  <button className="btn" disabled={nBusy} onClick={() => nSave(false)}>{t("Enregistrer seulement")}</button>
+                  <button className="btn ghost" onClick={() => { nReset(); setNOpen(false); }}>{t("Annuler")}</button>
+                </div>
+                <div className="hint">{t("Le jeton est ajouté à vos cartes personnalisées et son image est partagée avec les autres joueurs.")}</div>
+              </div>
+            </div>
+          )}
+        </div>
+        {/* ---- mes jetons personnalisés ---- */}
+        {mineShown.length > 0 && (
+          <div style={{ marginBottom: 12, borderBottom: "1px solid var(--line)", paddingBottom: 10 }}>
+            <div className="hint" style={{ marginBottom: 6 }}>🖌 {t("Mes jetons personnalisés")}</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+              {mineShown.map((c) => {
+                const im = c.data || c.url || null;
+                return (
+                  <div key={c.id} style={{ width: 118, position: "relative" }}>
+                    <div onClick={() => pick(custToTk(c))} title={t("cliquez pour créer")} style={{ cursor: "pointer" }}
+                      onMouseEnter={() => onHover && onHover({ img: im, imgN: im, name: c.name, fn: c.fn })}
+                      onMouseLeave={() => onHover && onHover(null)}>
+                      <div className="card-i" style={{ height: 165 }}>
+                        {im ? <img src={im} alt={c.fn || c.name} /> : <div className="card-txt">{c.fn || c.name}</div>}
+                      </div>
+                      {made[c.id] > 0 && <div className="badge">✓ ×{made[c.id]}</div>}
+                    </div>
+                    <div className="hint" style={{ marginTop: 3, textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {c.fn || c.name}{c.pt ? ` · ${c.pt}` : ""}
+                    </div>
+                    <button className="btn ghost danger" style={{ position: "absolute", top: 2, left: 2, padding: "1px 5px", fontSize: 10 }}
+                      title={t("Supprimer de mes jetons")} onClick={(e) => { e.stopPropagation(); nDel(c); }}>🗑</button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {busy && <div className="hint" style={{ padding: 20, textAlign: "center" }}>{t("Recherche…")}</div>}
         {!busy && res === null && <div className="hint" style={{ padding: 14, textAlign: "center" }}>{t("Tapez un nom ou cliquez un raccourci ci-dessus. Chaque clic sur un résultat crée un jeton (cliquez plusieurs fois pour plusieurs exemplaires).")}</div>}
         {!busy && res && res.length === 0 && (
